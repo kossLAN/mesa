@@ -360,12 +360,12 @@ static inline UINT_32 BitMaskScanForward(
 {
     ADDR_ASSERT(mask > 0);
     unsigned long out = 0;
-#if ((defined(_WIN64) && defined(_M_X64)) || (defined(_WIN32) && defined(_M_IX64))) && !defined(_M_ARM64EC)
+#if defined(__GNUC__)
+    out = __builtin_ctz(mask);
+#elif ((defined(_WIN64) && defined(_M_X64)) || (defined(_WIN32) && defined(_M_IX64))) && !defined(_M_ARM64EC)
     out = ::_tzcnt_u32(mask);
 #elif (defined(_WIN32) || defined(_WIN64))
     ::_BitScanForward(&out, mask);
-#elif defined(__GNUC__)
-    out = __builtin_ctz(mask);
 #else
     while ((mask & 1) == 0)
     {
