@@ -360,7 +360,7 @@ radv_amdgpu_winsys_query_info(int fd, uint64_t debug_flags, bool is_virtio, stru
    info->base.ip[AMD_IP_SDMA].num_queues = MIN2(info->base.ip[AMD_IP_SDMA].num_queues, MAX_RINGS_PER_TYPE);
    info->base.ip[AMD_IP_COMPUTE].num_queues = MIN2(info->base.ip[AMD_IP_COMPUTE].num_queues, MAX_RINGS_PER_TYPE);
 
-   info->syncobj_sync_type = vk_drm_syncobj_get_type(fd);
+   info->syncobj_sync_type = vk_drm_syncobj_get_type_from_provider(ac_drm_device_get_sync_provider(dev));
 
    /* Determine which context priorities are supported. */
    for (uint32_t p = RADEON_CTX_PRIORITY_LOW; p <= RADEON_CTX_PRIORITY_REALTIME; p++) {
