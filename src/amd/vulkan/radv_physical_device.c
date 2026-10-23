@@ -764,7 +764,7 @@ radv_physical_device_get_supported_extensions(const struct radv_physical_device 
       .KHR_pipeline_binary = true,
       .KHR_pipeline_executable_properties = true,
       .KHR_pipeline_library = true,
-#ifdef RADV_USE_WSI_PLATFORM
+#ifdef RADV_USE_WSI_PRESENT_FEEDBACK
       .KHR_present_id = true,
       .KHR_present_id2 = true,
       .KHR_present_wait = pdev->info.has_timeline_syncobj,
@@ -916,7 +916,7 @@ radv_physical_device_get_supported_extensions(const struct radv_physical_device 
       .EXT_pipeline_protected_access = radv_tmz_enabled(pdev),
       .EXT_pipeline_robustness = !pdev->use_llvm,
       .EXT_post_depth_coverage = pdev->info.gfx_level >= GFX10,
-#ifdef RADV_USE_WSI_PLATFORM
+#ifdef RADV_USE_WSI_PRESENT_FEEDBACK
       /* KHR_calibrated_timestamps is a requirement to expose EXT_present_timing. */
       .EXT_present_timing = radv_calibrated_timestamps_enabled(pdev),
 #endif
@@ -980,7 +980,7 @@ radv_physical_device_get_supported_extensions(const struct radv_physical_device 
       .ANDROID_native_buffer = true,
 #endif
       .GOOGLE_decorate_string = true,
-#ifdef RADV_USE_WSI_PLATFORM
+#ifdef RADV_USE_WSI_PRESENT_FEEDBACK
       .GOOGLE_display_timing = wsi_instance_supports_google_display_timing(pdev->vk.instance, &instance->drirc.options),
 #endif
       .GOOGLE_hlsl_functionality1 = true,
