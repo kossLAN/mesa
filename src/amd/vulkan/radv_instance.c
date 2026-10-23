@@ -287,6 +287,21 @@ radv_convert_perftest_to_experimental(struct radv_instance *instance)
 #undef CONVERT
 }
 
+#ifdef _WIN32
+static VkResult
+radv_enumerate_physical_devices_win32(struct vk_instance *vk_instance)
+{
+   struct vk_physical_device *pdev;
+   VkResult result = create_drm_physical_device(vk_instance, NULL, &pdev);
+   if (result == VK_ERROR_INCOMPATIBLE_DRIVER)
+      return VK_SUCCESS;
+   if (result != VK_SUCCESS)
+      return result;
+   list_addtail(&pdev->link, &vk_instance->physical_devices.list);
+   return VK_SUCCESS;
+}
+#endif
+
 VKAPI_ATTR VkResult VKAPI_CALL
 radv_CreateInstance(const VkInstanceCreateInfo *pCreateInfo, const VkAllocationCallbacks *pAllocator,
                     VkInstance *pInstance)
@@ -350,7 +365,11 @@ radv_CreateInstance(const VkInstanceCreateInfo *pCreateInfo, const VkAllocationC
          fprintf(stderr, "radv: Failed to open log file: %s.\n", filename);
    }
 
+#ifdef _WIN32
+   instance->vk.physical_devices.enumerate = radv_enumerate_physical_devices_win32;
+#else
    instance->vk.physical_devices.try_create_for_drm = create_drm_physical_device;
+#endif
    instance->vk.physical_devices.destroy = radv_physical_device_destroy;
 
    if (instance->debug_flags & RADV_DEBUG_STARTUP)

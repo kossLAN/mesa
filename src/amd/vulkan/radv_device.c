@@ -31,7 +31,7 @@
 #include "vk_common_entrypoints.h"
 #include "vk_pipeline_cache.h"
 #include "vk_util.h"
-#ifndef _WIN32
+#if !defined(_WIN32) || defined(HAVE_AMDGPU_VIRTIO)
 #include "winsys/amdgpu/radv_amdgpu_winsys_public.h"
 #endif
 #include "util/mesa-blake3.h"
@@ -1318,7 +1318,14 @@ static VkResult
 radv_create_winsys(struct radv_device *device)
 {
 #ifdef _WIN32
+#ifdef HAVE_AMDGPU_VIRTIO
+   const struct radv_physical_device *pdev = radv_device_physical(device);
+   const struct radv_instance *instance = radv_physical_device_instance(pdev);
+   return radv_amdgpu_winsys_create(-1, &pdev->info, instance->debug_flags, instance->perftest_flags, true,
+                                    &device->ws);
+#else
    return VK_ERROR_INCOMPATIBLE_DRIVER;
+#endif
 #else
    const struct radv_physical_device *pdev = radv_device_physical(device);
    const struct radv_instance *instance = radv_physical_device_instance(pdev);

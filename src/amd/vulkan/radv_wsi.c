@@ -95,9 +95,11 @@ radv_init_wsi(struct radv_physical_device *pdev)
 {
    const struct radv_instance *instance = radv_physical_device_instance(pdev);
 
+   const bool cpu_present = DETECT_OS_WINDOWS;
    VkResult result =
       wsi_device_init(&pdev->wsi_device, radv_physical_device_to_handle(pdev), radv_wsi_proc_addr, &instance->vk.alloc,
-                      pdev->wsi_master_fd, &instance->drirc.options, &(struct wsi_device_options){.sw_device = false});
+                      pdev->wsi_master_fd, &instance->drirc.options,
+                      &(struct wsi_device_options){.sw_device = cpu_present});
    if (result != VK_SUCCESS)
       return result;
 

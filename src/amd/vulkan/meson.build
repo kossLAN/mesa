@@ -217,7 +217,7 @@ libradv_files = files(
   'radv_wsi.h',
 )
 
-if not with_platform_windows
+if not with_platform_windows or with_amd_vk_virtio_windows
   libradv_files += files(
     'winsys/amdgpu/radv_amdgpu_bo.c',
     'winsys/amdgpu/radv_amdgpu_bo.h',

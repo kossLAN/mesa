@@ -35,7 +35,10 @@
 #include "radv_wsi.h"
 
 #ifdef _WIN32
-typedef void *drmDevicePtr;
+#include "ac_linux_drm.h"
+#ifdef HAVE_AMDGPU_VIRTIO
+#include "winsys/amdgpu/radv_amdgpu_winsys_public.h"
+#endif
 #else
 #include "drm-uapi/amdgpu_drm.h"
 #include "util/os_drm.h"
@@ -2518,15 +2521,18 @@ static VkResult
 radv_physical_device_try_create(struct radv_instance *instance, drmDevicePtr drm_device,
                                 struct radv_physical_device **pdev_out)
 {
-#ifdef _WIN32
-   assert(drm_device == NULL);
-   return VK_ERROR_INCOMPATIBLE_DRIVER;
-#else
    VkResult result;
    int fd = -1;
    int wsi_master_fd = -1, wsi_syncobj_fd = -1;
-   const char *path = drm_device->nodes[DRM_NODE_RENDER];
    enum radv_drm_device_type drm_device_type;
+#ifdef _WIN32
+   assert(drm_device == NULL);
+#ifndef HAVE_AMDGPU_VIRTIO
+   return VK_ERROR_INCOMPATIBLE_DRIVER;
+#endif
+   drm_device_type = RADV_DRM_DEVICE_AMDGPU_VPIPE;
+#else
+   const char *path = drm_device->nodes[DRM_NODE_RENDER];
    drmVersionPtr version;
 
    fd = open(path, O_RDWR | O_CLOEXEC);
@@ -2568,6 +2574,7 @@ radv_physical_device_try_create(struct radv_instance *instance, drmDevicePtr drm
 
    if (instance->debug_flags & RADV_DEBUG_STARTUP)
       fprintf(stderr, "radv: info: Found device '%s'.\n", path);
+#endif
 
    struct radv_physical_device *pdev =
       vk_zalloc2(&instance->vk.alloc, NULL, sizeof(*pdev), 8, VK_SYSTEM_ALLOCATION_SCOPE_INSTANCE);
@@ -2621,6 +2628,7 @@ radv_physical_device_try_create(struct radv_instance *instance, drmDevicePtr drm
    pdev->sync_types[num_sync_types++] = NULL;
    pdev->vk.supported_sync_types = pdev->sync_types;
 
+#ifndef _WIN32
    if (instance->vk.enabled_extensions.KHR_display) {
       wsi_master_fd = open(drm_device->nodes[DRM_NODE_PRIMARY], O_RDWR | O_CLOEXEC);
       if (wsi_master_fd >= 0) {
@@ -2639,6 +2647,7 @@ radv_physical_device_try_create(struct radv_instance *instance, drmDevicePtr drm
       if (fd != -1)
          wsi_syncobj_fd = os_dupfd_cloexec(fd);
    }
+#endif
 
    /* Allow all devices on a virtual winsys, otherwise do a basic support check. */
    if (!radv_is_gpu_supported(&pdev->info)) {
@@ -2770,6 +2779,7 @@ radv_physical_device_try_create(struct radv_instance *instance, drmDevicePtr drm
    radv_physical_device_get_supported_extensions(pdev, &pdev->vk.supported_extensions);
    radv_physical_device_get_features(pdev, &pdev->vk.supported_features);
 
+#ifndef _WIN32
    struct stat primary_stat = {0}, render_stat = {0};
 
    pdev->available_nodes = drm_device->available_nodes;
@@ -2790,6 +2800,7 @@ radv_physical_device_try_create(struct radv_instance *instance, drmDevicePtr drm
       goto fail_perfcounters;
    }
    pdev->render_devid = render_stat.st_rdev;
+#endif
 
    if (radv_device_get_cache_uuid(pdev, pdev->cache_uuid)) {
       result = vk_errorf(instance, VK_ERROR_INITIALIZATION_FAILED, "cannot generate UUID");
@@ -2872,7 +2883,6 @@ fail_fd:
    if (wsi_syncobj_fd != -1)
       close(wsi_syncobj_fd);
    return result;
-#endif
 }
 
 VkResult
@@ -2897,7 +2907,9 @@ create_drm_physical_device(struct vk_instance *vk_instance, struct _drmDevice *d
    return radv_physical_device_try_create((struct radv_instance *)vk_instance, device,
                                           (struct radv_physical_device **)out);
 #else
-   return VK_SUCCESS;
+   assert(device == NULL);
+   return radv_physical_device_try_create((struct radv_instance *)vk_instance, NULL,
+                                          (struct radv_physical_device **)out);
 #endif
 }
 
@@ -2919,7 +2931,7 @@ radv_physical_device_destroy(struct vk_physical_device *vk_device)
    if (pdev->wsi_syncobj_fd != -1)
       close(pdev->wsi_syncobj_fd);
    simple_mtx_destroy(&pdev->drm_device_mtx);
-#ifndef _WIN32
+#if !defined(_WIN32) || defined(HAVE_AMDGPU_VIRTIO)
    if (pdev->drm_device)
       ac_drm_device_deinitialize(pdev->drm_device);
 #endif
@@ -3149,7 +3161,7 @@ radv_GetPhysicalDeviceQueueFamilyProperties2(VkPhysicalDevice physicalDevice, ui
    }
 }
 
-#ifdef _WIN32
+#if defined(_WIN32) && !defined(HAVE_AMDGPU_VIRTIO)
 struct radeon_winsys_heap_info {
    uint64_t allocated_vram;
    uint64_t vram_usage;
@@ -3172,12 +3184,13 @@ radv_create_drm_device_locked(struct radv_physical_device *pdev)
       return;
 
    UNUSED uint32_t drm_major, drm_minor;
-   drmDevicePtr drm_device;
    ac_drm_device *dev;
    int fd = -1;
    int r;
 
+#ifndef _WIN32
    if (pdev->drm_device_type == RADV_DRM_DEVICE_AMDGPU || pdev->drm_device_type == RADV_DRM_DEVICE_VIRTIO) {
+      drmDevicePtr drm_device;
       r = drmGetDeviceFromDevId(pdev->render_devid, 0, &drm_device);
       if (r)
          return;
@@ -3189,6 +3202,7 @@ radv_create_drm_device_locked(struct radv_physical_device *pdev)
       if (fd < 0)
          return;
    }
+#endif
 
    const bool is_virtio =
       pdev->drm_device_type == RADV_DRM_DEVICE_AMDGPU_VPIPE || pdev->drm_device_type == RADV_DRM_DEVICE_VIRTIO;
