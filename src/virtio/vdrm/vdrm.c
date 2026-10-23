@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: MIT
  */
 
+#include "c11/threads.h"
 #include "util/u_math.h"
 #include "util/perf/cpu_trace.h"
 
@@ -195,5 +196,5 @@ void
 vdrm_host_sync(struct vdrm_device *vdev, const struct vdrm_ccmd_req *req)
 {
    while (fence_before(vdev->shmem->seqno, req->seqno))
-      sched_yield();
+      thrd_yield();
 }
