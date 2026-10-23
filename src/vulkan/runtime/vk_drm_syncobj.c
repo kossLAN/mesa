@@ -23,12 +23,16 @@
 
 #include "vk_drm_syncobj.h"
 
-#include <sched.h>
+#ifndef _WIN32
 #include <xf86drm.h>
+#endif
 
 #include "drm-uapi/drm.h"
 
+#include "c11/threads.h"
+#ifndef _WIN32
 #include "util/libsync.h"
+#endif
 #include "util/os_time.h"
 #include "util/u_sync_provider.h"
 
@@ -255,7 +259,7 @@ spin_wait_for_sync_file(struct vk_device *device,
          if (os_time_get_nano() >= abs_timeout_ns)
             return VK_TIMEOUT;
 
-         sched_yield();
+         thrd_yield();
       }
    } else {
       for (uint32_t i = 0; i < wait_count; i++) {
@@ -270,7 +274,7 @@ spin_wait_for_sync_file(struct vk_device *device,
             if (os_time_get_nano() >= abs_timeout_ns)
                return VK_TIMEOUT;
 
-            sched_yield();
+            thrd_yield();
          }
       }
    }
@@ -467,6 +471,7 @@ vk_drm_syncobj_move(struct vk_device *device,
    }
 }
 
+#ifndef _WIN32
 static VkResult
 vk_drm_copy_sync_file_payloads(struct vk_device *device,
                                uint32_t wait_count,
@@ -527,6 +532,7 @@ fail:
 
    return result;
 }
+#endif
 
 static VkResult
 vk_drm_syncobj_transfer_payloads(struct vk_device *device,
@@ -650,8 +656,13 @@ vk_drm_syncobj_copy_payloads(struct vk_device *device,
       return vk_drm_syncobj_transfer_payloads(device, wait_count, waits,
                                               signal_count, signals);
    } else {
+#ifdef _WIN32
+      return vk_errorf(device, VK_ERROR_FEATURE_NOT_PRESENT,
+                       "binary-only syncobjs need sync_file, which Windows lacks");
+#else
       return vk_drm_copy_sync_file_payloads(device, wait_count, waits,
                                             signal_count, signals);
+#endif
    }
 }
 
@@ -678,10 +689,12 @@ vk_drm_syncobj_get_type_from_provider(struct util_sync_provider *sync)
       .reset = vk_drm_syncobj_reset,
       .reset_many = vk_drm_syncobj_reset_many,
       .move = vk_drm_syncobj_move,
+#ifndef _WIN32
       .import_opaque_fd = vk_drm_syncobj_import_opaque_fd,
       .export_opaque_fd = vk_drm_syncobj_export_opaque_fd,
       .import_sync_file = vk_drm_syncobj_import_sync_file,
       .export_sync_file = vk_drm_syncobj_export_sync_file,
+#endif
    };
 
    err = sync->wait(sync, &syncobj, 1, 0,
