@@ -12,7 +12,9 @@
 #include "util/u_debug.h"
 #include "util/u_sync_provider.h"
 
+#ifndef _WIN32
 #include <xf86drm.h>
+#endif
 
 /* amdvgpu_device manage the virtual GPU.
  *
@@ -26,6 +28,9 @@ static amdvgpu_device_handle dev_list;
 
 static int fd_compare(int fd1, int fd2)
 {
+#ifdef _WIN32
+   return 0;
+#else
    char *name1 = drmGetPrimaryDeviceNameFromFd(fd1);
    char *name2 = drmGetPrimaryDeviceNameFromFd(fd2);
    int result;
@@ -41,6 +46,7 @@ static int fd_compare(int fd1, int fd2)
    free(name2);
 
    return result;
+#endif
 }
 
 static void amdvgpu_device_reference(struct amdvgpu_device **dst,
@@ -80,7 +86,8 @@ static void amdvgpu_device_reference(struct amdvgpu_device **dst,
 
       vdrm_device_close(dev->vdev);
 
-      close(dev->fd);
+      if (dev->fd >= 0)
+         close(dev->fd);
       free(dev);
    }
 
@@ -197,9 +204,11 @@ int amdvgpu_device_initialize(int fd, uint32_t *drm_major, uint32_t *drm_minor,
    *drm_minor = dev->vdev->caps.version_minor;
 
 init_sync_provider:
-   *p = vdrm_vpipe_get_sync(dev->vdev);
+   *p = vdrm_get_sync_provider(dev->vdev);
+#ifndef _WIN32
    if (!(*p))
       *p = util_sync_provider_drm(dev->fd);
+#endif
 
    return 0;
 }

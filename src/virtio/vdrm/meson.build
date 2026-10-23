@@ -7,14 +7,16 @@ libvdrm_c_args = [no_override_init_args, soong_compat_c_args]
 if with_amdgpu_virtio
   libvdrm_c_args += ['-DENABLE_DRM_AMDGPU']
 endif
+libvdrm_files = files('vdrm.c', 'vdrm.h')
+if with_platform_windows
+  libvdrm_files += files('vdrm_wddm.c')
+else
+  libvdrm_files += files('vdrm_virtgpu.c', 'vdrm_vpipe.c')
+endif
+
 libvdrm = static_library(
   'libvdrm',
-  [
-    'vdrm.c',
-    'vdrm.h',
-    'vdrm_virtgpu.c',
-    'vdrm_vpipe.c',
-  ],
+  libvdrm_files,
   include_directories : [
     inc_include,
     inc_src,

@@ -9,19 +9,25 @@
 
 #include "vdrm.h"
 
+#ifndef _WIN32
 struct vdrm_device * vdrm_virtgpu_connect(int fd, uint32_t context_type);
 struct vdrm_device * vdrm_vpipe_connect(uint32_t context_type);
+#endif
 
 struct vdrm_device *
 vdrm_device_connect(int fd, uint32_t context_type)
 {
    struct vdrm_device *vdev;
 
+#ifdef _WIN32
+   vdev = fd < 0 ? vdrm_wddm_connect(context_type) : NULL;
+#else
    if (fd >= 0) {
       vdev = vdrm_virtgpu_connect(fd, context_type);
    } else {
       vdev = vdrm_vpipe_connect(context_type);
    }
+#endif
 
    if (!vdev)
       return NULL;
@@ -30,6 +36,16 @@ vdrm_device_connect(int fd, uint32_t context_type)
    simple_mtx_init(&vdev->eb_lock, mtx_plain);
 
    return vdev;
+}
+
+struct util_sync_provider *
+vdrm_get_sync_provider(struct vdrm_device *vdev)
+{
+#ifdef _WIN32
+   return vdrm_wddm_get_sync(vdev);
+#else
+   return vdrm_vpipe_get_sync(vdev);
+#endif
 }
 
 void
