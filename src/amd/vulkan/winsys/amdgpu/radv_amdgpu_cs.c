@@ -6,8 +6,9 @@
  */
 
 #include <assert.h>
+#ifndef _WIN32
 #include <libsync.h>
-#include <pthread.h>
+#endif
 #include <stdlib.h>
 #include "drm-uapi/amdgpu_drm.h"
 
@@ -1157,6 +1158,22 @@ fail:
    return result;
 }
 
+#ifdef _WIN32
+static int
+radv_amdgpu_cs_wait_on_cpu(struct radv_amdgpu_ctx *ctx, struct radv_winsys_sem_counts *wait)
+{
+   const unsigned flags = DRM_SYNCOBJ_WAIT_FLAGS_WAIT_ALL | DRM_SYNCOBJ_WAIT_FLAGS_WAIT_FOR_SUBMIT;
+   int ret = 0;
+
+   if (wait->syncobj_count)
+      ret = ac_drm_cs_syncobj_wait(ctx->ws->dev, wait->syncobj, wait->syncobj_count, INT64_MAX, flags, NULL);
+   if (!ret && wait->timeline_syncobj_count)
+      ret = ac_drm_cs_syncobj_timeline_wait(ctx->ws->dev, wait->syncobj + wait->syncobj_count, wait->points,
+                                            wait->timeline_syncobj_count, INT64_MAX, flags, NULL);
+   return ret;
+}
+#endif
+
 static VkResult
 radv_amdgpu_cs_submit_zero(struct radv_amdgpu_ctx *ctx, enum amd_ip_type ip_type, int queue_idx,
                            struct radv_winsys_sem_info *sem_info)
@@ -1168,6 +1185,11 @@ radv_amdgpu_cs_submit_zero(struct radv_amdgpu_ctx *ctx, enum amd_ip_type ip_type
    if (!queue_syncobj)
       return VK_ERROR_OUT_OF_HOST_MEMORY;
 
+#ifdef _WIN32
+   if ((sem_info->wait.syncobj_count || sem_info->wait.timeline_syncobj_count) &&
+       radv_amdgpu_cs_wait_on_cpu(ctx, &sem_info->wait))
+      return VK_ERROR_DEVICE_LOST;
+#else
    if (sem_info->wait.syncobj_count || sem_info->wait.timeline_syncobj_count) {
       int fd;
       ret = ac_drm_cs_syncobj_export_sync_file(ctx->ws->dev, queue_syncobj, &fd);
@@ -1214,6 +1236,7 @@ radv_amdgpu_cs_submit_zero(struct radv_amdgpu_ctx *ctx, enum amd_ip_type ip_type
 
       ctx->queue_syncobj_wait[hw_ip][queue_idx] = true;
    }
+#endif
 
    for (unsigned i = 0; i < sem_info->signal.syncobj_count; ++i) {
       uint32_t dst_handle = sem_info->signal.syncobj[i];

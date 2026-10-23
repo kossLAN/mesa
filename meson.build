@@ -1954,6 +1954,11 @@ foreach d : _libdrm_checks
   endif
 endforeach
 
+with_amd_vk_virtio_windows = with_amd_vk and with_platform_windows and with_amdgpu_virtio
+if with_amd_vk_virtio_windows
+  dep_libdrm_amdgpu = dependency('libdrm_amdgpu_vamgr')
+endif
+
 dep_libudev = dependency('libudev', required : false)
 if dep_libudev.found()
   pre_args += '-DHAVE_LIBUDEV'

@@ -11,7 +11,6 @@
 #ifndef RADV_AMDGPU_WINSYS_H
 #define RADV_AMDGPU_WINSYS_H
 
-#include <pthread.h>
 #include "util/list.h"
 #include "util/rwlock.h"
 #include "util/simple_mtx.h"

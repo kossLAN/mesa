@@ -9,7 +9,13 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-#if !defined(_WIN32)
+#if !defined(_WIN32) || defined(HAVE_AMDGPU_VIRTIO)
+#define AC_DRM_REAL 1
+#else
+#define AC_DRM_REAL 0
+#endif
+
+#if AC_DRM_REAL
 #include "drm-uapi/amdgpu_drm.h"
 #include "amdgpu.h"
 #else
@@ -231,18 +237,6 @@ struct drm_amdgpu_info_uq_metadata {
    };
 };
 
-typedef struct _drmPciBusInfo {
-   uint16_t domain;
-   uint8_t bus;
-   uint8_t dev;
-   uint8_t func;
-} drmPciBusInfo, *drmPciBusInfoPtr;
-typedef struct _drmDevice {
-   union {
-      drmPciBusInfoPtr pci;
-   } businfo;
-} drmDevice, *drmDevicePtr;
-
 /**
  * Enum describing possible handle types
  *
@@ -318,14 +312,28 @@ struct drm_amdgpu_userq_wait;
 struct amdgpu_va;
 typedef struct amdgpu_va *amdgpu_va_handle;
 
-#endif /* !defined(_WIN32) */
+#endif /* AC_DRM_REAL */
+
+#ifdef _WIN32
+typedef struct _drmPciBusInfo {
+   uint16_t domain;
+   uint8_t bus;
+   uint8_t dev;
+   uint8_t func;
+} drmPciBusInfo, *drmPciBusInfoPtr;
+typedef struct _drmDevice {
+   union {
+      drmPciBusInfoPtr pci;
+   } businfo;
+} drmDevice, *drmDevicePtr;
+#endif
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-/* All functions are static inline stubs on Windows. */
-#ifdef _WIN32
+/* All functions are static inline stubs without a real amdgpu interface. */
+#if !AC_DRM_REAL
 #define __U_STUB__
 #endif
 #include "util/u_stub.h"
@@ -336,7 +344,7 @@ struct util_sync_provider;
 struct radeon_info;
 
 typedef union ac_drm_bo {
-#ifdef _WIN32
+#if !AC_DRM_REAL
    void *abo;
 #else
    amdgpu_bo_handle abo;

@@ -198,7 +198,7 @@ if with_gfx_compute
   )
 endif
 
-if not with_platform_windows
+if not with_platform_windows or with_amd_vk_virtio_windows
   amd_common_files += files(
     'ac_linux_drm.c',
   )

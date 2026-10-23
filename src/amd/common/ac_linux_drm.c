@@ -3,12 +3,19 @@
  * SPDX-License-Identifier: MIT
  */
 
+#ifndef _WIN32
 #include "util/os_drm.h"
+#endif
 #include "ac_linux_drm.h"
 #include "util/os_misc.h"
+#include "util/os_time.h"
 #include "util/u_math.h"
 #include "util/u_sync_provider.h"
 #include "ac_gpu_info.h"
+#ifdef _WIN32
+/* After amdgpu.h and u_sync_provider.h, whose prototypes it shadows. */
+#include "ac_linux_drm_win32.h"
+#endif
 
 #include <stdlib.h>
 #include <time.h>
@@ -180,16 +187,7 @@ static uint64_t amdgpu_cs_calculate_timeout(uint64_t timeout)
    int r;
 
    if (timeout != AMDGPU_TIMEOUT_INFINITE) {
-      struct timespec current;
-      uint64_t current_ns;
-      r = clock_gettime(CLOCK_MONOTONIC, &current);
-      if (r) {
-         fprintf(stderr, "clock_gettime() returned error (%d)!", errno);
-         return AMDGPU_TIMEOUT_INFINITE;
-      }
-
-      current_ns = ((uint64_t)current.tv_sec) * 1000000000ull;
-      current_ns += current.tv_nsec;
+      uint64_t current_ns = os_time_get_nano();
       timeout += current_ns;
       if (timeout < current_ns)
          timeout = AMDGPU_TIMEOUT_INFINITE;
@@ -228,7 +226,9 @@ int ac_drm_bo_wait_for_idle(ac_drm_device *dev, ac_drm_bo bo, uint64_t timeout_n
 int ac_drm_bo_va_op(ac_drm_device *dev, uint32_t bo_handle, uint64_t offset, uint64_t size,
                     uint64_t addr, uint64_t flags, uint32_t ops)
 {
-   size = align64(size, getpagesize());
+   uint64_t page_size = 4096;
+   os_get_page_size(&page_size);
+   size = align64(size, page_size);
 
    return ac_drm_bo_va_op_raw(
       dev, bo_handle, offset, size, addr,
@@ -1097,6 +1097,9 @@ int ac_drm_query_pci_bus_info(ac_drm_device *dev, struct radeon_info *info)
       info->pci.dev = 0;
       info->pci.func = 0;
    } else {
+#ifdef _WIN32
+      return -1;
+#else
       drmDevicePtr devinfo;
 
       /* Get PCI info. */
@@ -1111,6 +1114,7 @@ int ac_drm_query_pci_bus_info(ac_drm_device *dev, struct radeon_info *info)
       info->pci.func = devinfo->businfo.pci->func;
 
       drmFreeDevice(&devinfo);
+#endif
    }
    info->pci.valid = true;
 

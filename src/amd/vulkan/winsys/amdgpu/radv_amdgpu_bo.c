@@ -15,14 +15,15 @@
 #include "radv_amdgpu_bo.h"
 
 #include <inttypes.h>
-#include <pthread.h>
-#include <unistd.h>
-#include <xf86drm.h>
 #include "drm-uapi/amdgpu_drm.h"
-#include <sys/mman.h>
 #include "ac_linux_drm.h"
 
+#ifndef _WIN32
+#include <sys/mman.h>
+#include <unistd.h>
 #include "util/os_drm.h"
+#endif
+#include "util/os_misc.h"
 #include "util/os_time.h"
 #include "util/u_atomic.h"
 #include "util/u_math.h"
@@ -47,7 +48,9 @@ radv_amdgpu_bo_va_op(struct radv_amdgpu_winsys *ws, uint32_t bo_handle, uint64_t
          flags |= AMDGPU_VM_PAGE_WRITEABLE;
    }
 
-   size = align64(size, getpagesize());
+   uint64_t page_size = 4096;
+   os_get_page_size(&page_size);
+   size = align64(size, page_size);
 
    if (bo_flags & RADEON_FLAG_VM_UPDATE_WAIT) {
       /* Wait for VM MAP updates when requested instead of delaying the updates at submit time.
@@ -377,8 +380,10 @@ radv_amdgpu_winsys_bo_destroy(struct radeon_winsys *_ws, struct radeon_winsys_bo
       return;
    }
 
+#ifndef _WIN32
    if (bo->cpu_map)
       munmap(bo->cpu_map, bo->base.size);
+#endif
 
    if (ws->debug_all_bos)
       radv_amdgpu_global_bo_list_del(ws, bo);
@@ -734,6 +739,9 @@ radv_amdgpu_winsys_bo_map(struct radeon_winsys *_ws, struct radeon_winsys_bo *_b
    }
 #endif
 
+#ifdef _WIN32
+   return NULL;
+#else
    union drm_amdgpu_gem_mmap args;
    memset(&args, 0, sizeof(args));
    args.in.handle = bo->bo_handle;
@@ -749,6 +757,7 @@ radv_amdgpu_winsys_bo_map(struct radeon_winsys *_ws, struct radeon_winsys_bo *_b
 
    bo->cpu_map = data;
    return data;
+#endif
 }
 
 static void
@@ -762,15 +771,21 @@ radv_amdgpu_winsys_bo_unmap(struct radeon_winsys *_ws, struct radeon_winsys_bo *
 
    assert(bo->cpu_map);
    if (replace) {
+#ifndef _WIN32
       (void)mmap(bo->cpu_map, bo->base.size, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
+#endif
    } else {
 #if HAVE_AMDGPU_VIRTIO
       struct radv_amdgpu_winsys *ws = radv_amdgpu_winsys(_ws);
       if (ws->info.is_virtio)
          ac_drm_bo_cpu_unmap(ws->dev, bo->bo);
+#ifndef _WIN32
       else
-#endif
          munmap(bo->cpu_map, bo->base.size);
+#endif
+#else
+      munmap(bo->cpu_map, bo->base.size);
+#endif
    }
    bo->cpu_map = NULL;
 }
