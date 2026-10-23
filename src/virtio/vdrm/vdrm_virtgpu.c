@@ -235,6 +235,12 @@ virtgpu_bo_map(struct vdrm_device *vdev, uint32_t handle, size_t size, void *pla
    return map;
 }
 
+static void
+virtgpu_bo_unmap(struct vdrm_device *vdev, uint32_t handle, void *addr, size_t size)
+{
+   munmap(addr, size);
+}
+
 static int
 virtgpu_bo_export_dmabuf(struct vdrm_device *vdev, uint32_t handle)
 {
@@ -283,6 +289,7 @@ static const struct vdrm_device_funcs funcs = {
    .bo_create = virtgpu_bo_create,
    .bo_wait = virtgpu_bo_wait,
    .bo_map = virtgpu_bo_map,
+   .bo_unmap = virtgpu_bo_unmap,
    .bo_export_dmabuf = virtgpu_bo_export_dmabuf,
    .bo_close = virtgpu_bo_close,
    .close = virtgpu_close,

@@ -9,10 +9,7 @@
 #include <string.h>
 #include <errno.h>
 #include <assert.h>
-#include <xf86drm.h>
-#include <libsync.h>
 
-#include <dlfcn.h>
 #include "amdgpu.h"
 
 #include "amdgpu_virtio_private.h"
@@ -413,8 +410,7 @@ amdvgpu_cs_submit_raw2(amdvgpu_device_handle dev, uint32_t ctx_id,
 
    if (ret == 0 && fence_fd_ptr) {
       /* Sync execution */
-      sync_wait(*fence_fd_ptr, -1);
-      close(*fence_fd_ptr);
+      dev->vdev->funcs->wait_fence(dev->vdev, *fence_fd_ptr);
       vdrm_host_sync(dev->vdev, &req->hdr);
    }
 

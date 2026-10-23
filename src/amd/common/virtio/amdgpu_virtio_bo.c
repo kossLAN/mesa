@@ -8,10 +8,8 @@
 
 #include "amdgpu_virtio_private.h"
 #include "util/log.h"
-#include "util/os_mman.h"
 #include "sid.h"
 
-#include <xf86drm.h>
 #include <string.h>
 #include <fcntl.h>
 
@@ -60,10 +58,8 @@ struct amdvgpu_host_blob *create_host_blob(uint32_t kms_handle,
 
 static
 void destroy_host_blob(amdvgpu_device_handle dev, struct amdvgpu_host_blob *hb) {
-   if (hb->cpu_addr) {
-      int r = os_munmap(hb->cpu_addr, hb->alloc_size);
-      assert(r == 0);
-   }
+   if (hb->cpu_addr)
+      vdrm_bo_unmap(dev->vdev, hb->handle, hb->cpu_addr, hb->alloc_size);
    simple_mtx_destroy(&hb->cpu_access_mutex);
 
    vdrm_bo_close(dev->vdev, hb->handle);
@@ -311,7 +307,8 @@ int amdvgpu_bo_cpu_unmap(amdvgpu_device_handle dev, amdvgpu_bo_handle bo) {
    }
    assert(bo->host_blob->cpu_addr);
    if (p_atomic_dec_zero(&bo->host_blob->map_count)) {
-      r = os_munmap(bo->host_blob->cpu_addr, bo->host_blob->alloc_size);
+      vdrm_bo_unmap(bo->dev->vdev, bo->host_blob->handle, bo->host_blob->cpu_addr,
+                    bo->host_blob->alloc_size);
       bo->host_blob->cpu_addr = NULL;
    }
    simple_mtx_unlock(&bo->host_blob->cpu_access_mutex);

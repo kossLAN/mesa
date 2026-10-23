@@ -45,6 +45,7 @@ struct vdrm_device_funcs {
                          struct vdrm_ccmd_req *req);
    int (*bo_wait)(struct vdrm_device *vdev, uint32_t handle);
    void *(*bo_map)(struct vdrm_device *vdev, uint32_t handle, size_t size, void *placed_addr);
+   void (*bo_unmap)(struct vdrm_device *vdev, uint32_t handle, void *addr, size_t size);
    int (*bo_export_dmabuf)(struct vdrm_device *vdev, uint32_t handle);
    void (*bo_close)(struct vdrm_device *vdev, uint32_t handle);
 
@@ -146,6 +147,12 @@ vdrm_bo_map(struct vdrm_device *vdev, uint32_t handle, size_t size, void *placed
    return vdev->funcs->bo_map(vdev, handle, size, placed_addr);
 }
 
+static inline void
+vdrm_bo_unmap(struct vdrm_device *vdev, uint32_t handle, void *addr, size_t size)
+{
+   vdev->funcs->bo_unmap(vdev, handle, addr, size);
+}
+
 static inline int
 vdrm_bo_export_dmabuf(struct vdrm_device *vdev, uint32_t handle)
 {
@@ -164,6 +171,13 @@ vdrm_bo_close(struct vdrm_device *vdev, uint32_t handle)
  */
 struct util_sync_provider;
 struct util_sync_provider *vdrm_vpipe_get_sync(struct vdrm_device *vdrm);
+
+struct util_sync_provider *vdrm_get_sync_provider(struct vdrm_device *vdev);
+
+#ifdef _WIN32
+struct vdrm_device *vdrm_wddm_connect(uint32_t context_type);
+struct util_sync_provider *vdrm_wddm_get_sync(struct vdrm_device *vdev);
+#endif
 
 #ifdef __cplusplus
 } /* end of extern "C" */

@@ -472,6 +472,12 @@ vpipe_bo_map(struct vdrm_device *vdev, uint32_t handle, size_t size, void *place
    return ret;
 }
 
+static void
+vpipe_bo_unmap(struct vdrm_device *vdev, uint32_t handle, void *addr, size_t size)
+{
+   munmap(addr, size);
+}
+
 static int
 vpipe_bo_export_dmabuf(struct vdrm_device *vdev, uint32_t handle)
 {
@@ -554,6 +560,7 @@ static const struct vdrm_device_funcs funcs = {
    .bo_create = vpipe_bo_create,
    .bo_wait = vpipe_bo_wait,
    .bo_map = vpipe_bo_map,
+   .bo_unmap = vpipe_bo_unmap,
    .bo_export_dmabuf = vpipe_bo_export_dmabuf,
    .bo_close = vpipe_bo_close,
    .close = vpipe_close,

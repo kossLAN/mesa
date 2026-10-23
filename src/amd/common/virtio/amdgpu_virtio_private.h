@@ -105,11 +105,6 @@ static inline bool update_references(int *dst, int *src)
    return false;
 }
 
-#define virtio_ioctl(fd, name, args) ({                              \
-      int ret = drmIoctl((fd), DRM_IOCTL_ ## name, (args));          \
-      ret;                                                           \
-      })
-
 struct amdvgpu_host_blob_creation_params {
    struct drm_virtgpu_resource_create_blob args;
    struct amdgpu_ccmd_gem_new_req req;
