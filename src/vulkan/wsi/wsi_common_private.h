@@ -230,6 +230,10 @@ struct wsi_swapchain {
    VkDevice device;
    VkAllocationCallbacks alloc;
    VkFence* fences;
+   /* The backend waits for an image's present fence before it reads the
+    * image on the CPU.
+    */
+   bool backend_waits_for_present_fence;
    VkPresentModeKHR present_mode;
    /**
     * Timeline for presents completing according to VK_KHR_present_wait.  The

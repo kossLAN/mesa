@@ -70,6 +70,7 @@ enum wsi_win32_image_state {
 struct wsi_win32_image {
    struct wsi_image base;
    enum wsi_win32_image_state state;
+   uint64_t present_seq;
    struct wsi_win32_swapchain *chain;
    struct {
       ID3D12Resource *swapchain_res;
@@ -109,6 +110,19 @@ struct wsi_win32_swapchain {
    VkExtent2D                 extent;
    HWND wnd;
    HDC chain_dc;
+
+   /* Without DXGI, a thread copies queued images to the window. Protected by
+    * acquire_mutex.
+    */
+   struct {
+      thrd_t thread;
+      bool running;
+      bool stop;
+      struct u_cnd_monotonic cond;
+      uint64_t seq;
+      struct wsi_win32_image *busy;
+   } present;
+
    struct wsi_win32_image     images[0];
 };
 
@@ -607,6 +621,14 @@ wsi_win32_swapchain_destroy(struct wsi_swapchain *drv_chain,
    struct wsi_win32_swapchain *chain =
       (struct wsi_win32_swapchain *) drv_chain;
 
+   if (chain->present.running) {
+      mtx_lock(&chain->acquire_mutex);
+      chain->present.stop = true;
+      u_cnd_monotonic_broadcast(&chain->present.cond);
+      mtx_unlock(&chain->acquire_mutex);
+      thrd_join(chain->present.thread, NULL);
+   }
+
    for (uint32_t i = 0; i < chain->base.image_count; i++)
       wsi_win32_image_finish(chain, allocator, &chain->images[i]);
 
@@ -620,6 +642,7 @@ wsi_win32_swapchain_destroy(struct wsi_swapchain *drv_chain,
 
    wsi_swapchain_finish(&chain->base);
 
+   u_cnd_monotonic_destroy(&chain->present.cond);
    u_cnd_monotonic_destroy(&chain->acquire_cond);
    mtx_destroy(&chain->acquire_mutex);
 
@@ -806,6 +829,75 @@ wsi_win32_queue_present_dxgi(struct wsi_win32_swapchain *chain,
 }
 
 static VkResult
+wsi_win32_copy_to_window(struct wsi_win32_swapchain *chain, struct wsi_win32_image *image)
+{
+   char *ptr = (char *)image->base.cpu_map;
+   char *dptr = (char *)image->sw.ppvBits;
+
+   for (unsigned h = 0; h < chain->extent.height; h++) {
+      memcpy(dptr, ptr, chain->extent.width * 4);
+      dptr += image->sw.bmp_row_pitch;
+      ptr += image->base.row_pitches[0];
+   }
+   if (!StretchBlt(chain->chain_dc, 0, 0, chain->extent.width, chain->extent.height, image->sw.dc, 0, 0, chain->extent.width, chain->extent.height, SRCCOPY))
+      return VK_ERROR_MEMORY_MAP_FAILED;
+   return VK_SUCCESS;
+}
+
+/* Called with acquire_mutex held. */
+static struct wsi_win32_image *
+wsi_win32_oldest_queued(struct wsi_win32_swapchain *chain)
+{
+   struct wsi_win32_image *oldest = NULL;
+   for (uint32_t i = 0; i < chain->base.image_count; i++) {
+      struct wsi_win32_image *image = &chain->images[i];
+      if (image->state == WSI_IMAGE_QUEUED && image != chain->present.busy &&
+          (!oldest || image->present_seq < oldest->present_seq))
+         oldest = image;
+   }
+   return oldest;
+}
+
+static int
+wsi_win32_present_thread(void *data)
+{
+   struct wsi_win32_swapchain *chain = (struct wsi_win32_swapchain *)data;
+   const struct wsi_device *wsi = chain->wsi->wsi;
+
+   u_thread_setname("wsi_win32_present");
+
+   mtx_lock(&chain->acquire_mutex);
+   for (;;) {
+      struct wsi_win32_image *image = NULL;
+      while (!chain->present.stop && !(image = wsi_win32_oldest_queued(chain)))
+         u_cnd_monotonic_wait(&chain->present.cond, &chain->acquire_mutex);
+      if (!image)
+         break;
+      chain->present.busy = image;
+      mtx_unlock(&chain->acquire_mutex);
+
+      /* The present's submission, with the blit into this image's CPU
+       * memory, signals the image's fence. The image cannot be presented
+       * again, and the fence reset, before it is idle.
+       */
+      const uint32_t index = image - chain->images;
+      VkResult result = wsi->WaitForFences(chain->base.device, 1, &chain->base.fences[index],
+                                           true, UINT64_MAX);
+      if (result == VK_SUCCESS)
+         result = wsi_win32_copy_to_window(chain, image);
+
+      mtx_lock(&chain->acquire_mutex);
+      if (result != VK_SUCCESS)
+         chain->status = result;
+      chain->present.busy = NULL;
+      image->state = WSI_IMAGE_IDLE;
+      u_cnd_monotonic_broadcast(&chain->acquire_cond);
+   }
+   mtx_unlock(&chain->acquire_mutex);
+   return 0;
+}
+
+static VkResult
 wsi_win32_queue_present(struct wsi_swapchain *drv_chain,
                         uint32_t image_index,
                         uint64_t present_id,
@@ -820,20 +912,22 @@ wsi_win32_queue_present(struct wsi_swapchain *drv_chain,
    if (chain->dxgi)
       return wsi_win32_queue_present_dxgi(chain, image, damage);
 
-   char *ptr = (char *)image->base.cpu_map;
-   char *dptr = (char *)image->sw.ppvBits;
-
-   for (unsigned h = 0; h < chain->extent.height; h++) {
-      memcpy(dptr, ptr, chain->extent.width * 4);
-      dptr += image->sw.bmp_row_pitch;
-      ptr += image->base.row_pitches[0];
+   mtx_lock(&chain->acquire_mutex);
+   if (chain->base.present_mode == VK_PRESENT_MODE_MAILBOX_KHR) {
+      for (uint32_t i = 0; i < chain->base.image_count; i++) {
+         struct wsi_win32_image *queued = &chain->images[i];
+         if (queued->state == WSI_IMAGE_QUEUED && queued != chain->present.busy)
+            queued->state = WSI_IMAGE_IDLE;
+      }
+      u_cnd_monotonic_broadcast(&chain->acquire_cond);
    }
-   if (!StretchBlt(chain->chain_dc, 0, 0, chain->extent.width, chain->extent.height, image->sw.dc, 0, 0, chain->extent.width, chain->extent.height, SRCCOPY))
-      chain->status = VK_ERROR_MEMORY_MAP_FAILED;
+   image->state = WSI_IMAGE_QUEUED;
+   image->present_seq = ++chain->present.seq;
+   u_cnd_monotonic_broadcast(&chain->present.cond);
+   VkResult status = chain->status;
+   mtx_unlock(&chain->acquire_mutex);
 
-   wsi_win32_set_image_idle(chain, image);
-
-   return chain->status;
+   return status;
 }
 
 static VkResult
@@ -948,6 +1042,14 @@ wsi_win32_surface_create_swapchain(
       return VK_ERROR_OUT_OF_HOST_MEMORY;
    }
 
+   ret = u_cnd_monotonic_init(&chain->present.cond);
+   if (ret != thrd_success) {
+      u_cnd_monotonic_destroy(&chain->acquire_cond);
+      mtx_destroy(&chain->acquire_mutex);
+      vk_free(allocator, chain);
+      return VK_ERROR_OUT_OF_HOST_MEMORY;
+   }
+
    const VkImageUsageFlags2KHR image_usage = vk_swapchain_usage_flags(create_info);
 
    struct wsi_dxgi_image_params dxgi_image_params = {
@@ -969,6 +1071,7 @@ wsi_win32_surface_create_swapchain(
                                         create_info, image_params,
                                         allocator);
    if (result != VK_SUCCESS) {
+      u_cnd_monotonic_destroy(&chain->present.cond);
       u_cnd_monotonic_destroy(&chain->acquire_cond);
       mtx_destroy(&chain->acquire_mutex);
       vk_free(allocator, chain);
@@ -1002,6 +1105,15 @@ wsi_win32_surface_create_swapchain(
          goto fail;
 
       chain->base.image_count++;
+   }
+
+   if (!chain->dxgi) {
+      if (thrd_create(&chain->present.thread, wsi_win32_present_thread, chain) != thrd_success) {
+         result = VK_ERROR_OUT_OF_HOST_MEMORY;
+         goto fail;
+      }
+      chain->present.running = true;
+      chain->base.backend_waits_for_present_fence = true;
    }
 
    *swapchain_out = &chain->base;
