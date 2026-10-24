@@ -67,6 +67,12 @@ enum radv_gfx12_hiz_wa {
    RADV_GFX12_HIZ_WA_FULL,
 };
 
+#ifdef _WIN32
+#define RADV_FD_EXTERNAL_HANDLES false
+#else
+#define RADV_FD_EXTERNAL_HANDLES true
+#endif
+
 enum radv_drm_device_type {
    RADV_DRM_DEVICE_AMDGPU,
    RADV_DRM_DEVICE_AMDGPU_VPIPE,

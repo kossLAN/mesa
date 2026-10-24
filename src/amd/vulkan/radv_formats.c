@@ -1199,6 +1199,8 @@ get_external_image_format_properties(struct radv_physical_device *pdev,
          break;
       FALLTHROUGH;
    case VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT:
+      if (!RADV_FD_EXTERNAL_HANDLES)
+         break;
       flags = VK_EXTERNAL_MEMORY_FEATURE_EXPORTABLE_BIT | VK_EXTERNAL_MEMORY_FEATURE_IMPORTABLE_BIT;
       if (handleType == VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT &&
           pImageFormatInfo->tiling != VK_IMAGE_TILING_LINEAR)
@@ -1573,6 +1575,8 @@ radv_GetPhysicalDeviceExternalBufferProperties(VkPhysicalDevice physicalDevice,
    switch (pExternalBufferInfo->handleType) {
    case VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT:
    case VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT:
+      if (!RADV_FD_EXTERNAL_HANDLES)
+         break;
       flags = VK_EXTERNAL_MEMORY_FEATURE_EXPORTABLE_BIT | VK_EXTERNAL_MEMORY_FEATURE_IMPORTABLE_BIT;
       compat_flags = export_flags =
          VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT | VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT;
