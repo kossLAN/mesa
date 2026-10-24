@@ -8,6 +8,7 @@
 
 #include "amdgpu_virtio_private.h"
 #include "util/log.h"
+#include "util/os_time.h"
 #include "sid.h"
 
 #include <string.h>
@@ -30,7 +31,27 @@ struct amdvgpu_host_blob {
    uint32_t preferred_heap;
    uint64_t phys_alignment;
    uint64_t flags;
+   uint32_t blob_flags;
+
+   bool cacheable;
+   struct list_head cache_link;
+   int64_t freed_at;
 };
+
+#define BLOB_CACHE_MAX_SIZE (256ull << 20)
+#define BLOB_CACHE_MAX_BLOB (BLOB_CACHE_MAX_SIZE / 4)
+#define BLOB_CACHE_MAX_AGE_NS (1000ll * 1000 * 1000)
+#define BLOB_CACHE_MAX_GTT_BLOB (4ull << 20)
+
+/* The kernel hands out new GTT memory zeroed, and drivers rely on it (e.g.
+ * VK_EXT_zero_initialize_device_memory). VRAM holds whatever it held unless
+ * VRAM_CLEARED is asked for, and such blobs are not reused.
+ */
+static bool
+blob_is_gtt(const struct amdvgpu_host_blob *hb)
+{
+   return hb->preferred_heap & AMDGPU_GEM_DOMAIN_GTT;
+}
 
 static
 void destroy_host_blob(amdvgpu_device_handle dev, struct amdvgpu_host_blob *hb);
@@ -66,6 +87,96 @@ void destroy_host_blob(amdvgpu_device_handle dev, struct amdvgpu_host_blob *hb) 
    free(hb);
 }
 
+static void
+blob_cache_evict_locked(amdvgpu_device_handle dev, int64_t now, uint64_t room)
+{
+   list_for_each_entry_safe(struct amdvgpu_host_blob, hb, &dev->blob_cache, cache_link) {
+      if (now - hb->freed_at < BLOB_CACHE_MAX_AGE_NS &&
+          dev->blob_cache_size + room <= BLOB_CACHE_MAX_SIZE)
+         break;
+      list_del(&hb->cache_link);
+      dev->blob_cache_size -= hb->alloc_size;
+      destroy_host_blob(dev, hb);
+   }
+}
+
+static struct amdvgpu_host_blob *
+blob_cache_take(amdvgpu_device_handle dev, const struct amdgpu_ccmd_gem_new_req *req,
+                uint32_t blob_flags)
+{
+   struct amdvgpu_host_blob *found = NULL;
+
+   simple_mtx_lock(&dev->blob_cache_mutex);
+   blob_cache_evict_locked(dev, os_time_get_nano(), 0);
+   list_for_each_entry_rev(struct amdvgpu_host_blob, hb, &dev->blob_cache, cache_link) {
+      if (hb->alloc_size == req->r.alloc_size && hb->phys_alignment == req->r.phys_alignment &&
+          hb->preferred_heap == req->r.preferred_heap && hb->flags == req->r.flags &&
+          hb->blob_flags == blob_flags) {
+         found = hb;
+         break;
+      }
+   }
+   if (found) {
+      list_del(&found->cache_link);
+      dev->blob_cache_size -= found->alloc_size;
+   }
+   simple_mtx_unlock(&dev->blob_cache_mutex);
+
+   if (found && blob_is_gtt(found)) {
+      void *cpu = vdrm_bo_map(dev->vdev, found->handle, found->alloc_size, NULL);
+      if (!cpu) {
+         destroy_host_blob(dev, found);
+         return NULL;
+      }
+      memset(cpu, 0, found->alloc_size);
+      vdrm_bo_unmap(dev->vdev, found->handle, cpu, found->alloc_size);
+   }
+   return found;
+}
+
+static bool
+blob_cache_put(amdvgpu_device_handle dev, struct amdvgpu_host_blob *hb)
+{
+   if (!hb->cacheable || hb->alloc_size > BLOB_CACHE_MAX_BLOB ||
+       (blob_is_gtt(hb) && hb->alloc_size > BLOB_CACHE_MAX_GTT_BLOB))
+      return false;
+
+   if (hb->cpu_addr) {
+      vdrm_bo_unmap(dev->vdev, hb->handle, hb->cpu_addr, hb->alloc_size);
+      hb->cpu_addr = NULL;
+   }
+   hb->map_count = 0;
+
+   simple_mtx_lock(&dev->blob_cache_mutex);
+   const int64_t now = os_time_get_nano();
+   blob_cache_evict_locked(dev, now, hb->alloc_size);
+   hb->freed_at = now;
+   list_addtail(&hb->cache_link, &dev->blob_cache);
+   dev->blob_cache_size += hb->alloc_size;
+   simple_mtx_unlock(&dev->blob_cache_mutex);
+   return true;
+}
+
+void
+amdvgpu_blob_cache_fini(amdvgpu_device_handle dev)
+{
+   simple_mtx_lock(&dev->blob_cache_mutex);
+   list_for_each_entry_safe(struct amdvgpu_host_blob, hb, &dev->blob_cache, cache_link)
+      destroy_host_blob(dev, hb);
+   list_inithead(&dev->blob_cache);
+   dev->blob_cache_size = 0;
+   simple_mtx_unlock(&dev->blob_cache_mutex);
+   simple_mtx_destroy(&dev->blob_cache_mutex);
+}
+
+static void
+publish_host_blob(amdvgpu_bo_handle bo)
+{
+   simple_mtx_lock(&bo->dev->handle_to_vbo_mutex);
+   _mesa_hash_table_u64_insert(bo->dev->handle_to_vbo, bo->host_blob->handle, bo);
+   simple_mtx_unlock(&bo->dev->handle_to_vbo_mutex);
+}
+
 static int
 alloc_host_blob(amdvgpu_bo_handle bo,
                 struct amdgpu_ccmd_gem_new_req *req,
@@ -85,10 +196,12 @@ alloc_host_blob(amdvgpu_bo_handle bo,
       res_id = vdrm_handle_to_res_id(bo->dev->vdev, kms_handle);
 
       bo->host_blob = create_host_blob(kms_handle, res_id, req->r.alloc_size, req);
-
-      simple_mtx_lock(&bo->dev->handle_to_vbo_mutex);
-      _mesa_hash_table_u64_insert(bo->dev->handle_to_vbo, bo->host_blob->handle, bo);
-      simple_mtx_unlock(&bo->dev->handle_to_vbo_mutex);
+      bo->host_blob->blob_flags = blob_flags;
+      bo->host_blob->cacheable = !(blob_flags & VIRTGPU_BLOB_FLAG_USE_SHAREABLE) &&
+                                 !(req->r.flags & AMDGPU_GEM_CREATE_VRAM_CLEARED) &&
+                                 (!blob_is_gtt(bo->host_blob) ||
+                                  (blob_flags & VIRTGPU_BLOB_FLAG_USE_MAPPABLE));
+      publish_host_blob(bo);
 
       return 0;
 }
@@ -106,6 +219,7 @@ int amdvgpu_bo_export(amdvgpu_device_handle dev, amdvgpu_bo_handle bo,
       return 0;
 
    case amdgpu_bo_handle_type_dma_buf_fd:
+      bo->host_blob->cacheable = false;
       *shared_handle = vdrm_bo_export_dmabuf(dev->vdev, bo->host_blob->handle);
       return 0;
 
@@ -138,7 +252,7 @@ int amdvgpu_bo_free(amdvgpu_device_handle dev, struct amdvgpu_bo *bo) {
       /* Flush pending ops. */
       vdrm_flush(dev->vdev);
 
-      if (bo->host_blob)
+      if (bo->host_blob && !blob_cache_put(dev, bo->host_blob))
          destroy_host_blob(dev, bo->host_blob);
 
       free(bo);
@@ -181,7 +295,13 @@ int amdvgpu_bo_alloc(amdvgpu_device_handle dev,
    out->dev = dev;
    out->size = request->alloc_size;
 
-   r = alloc_host_blob(out, &req, blob_flags);
+   out->host_blob = blob_cache_take(dev, &req, blob_flags);
+   if (out->host_blob) {
+      publish_host_blob(out);
+      r = 0;
+   } else {
+      r = alloc_host_blob(out, &req, blob_flags);
+   }
 
    if (r < 0) {
       free(out);

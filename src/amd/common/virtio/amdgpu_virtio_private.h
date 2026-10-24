@@ -10,6 +10,7 @@
 #include "drm-uapi/virtgpu_drm.h"
 
 #include "util/hash_table.h"
+#include "util/list.h"
 #include "util/simple_mtx.h"
 
 #include "amd_family.h"
@@ -49,6 +50,10 @@ struct amdvgpu_device {
     */
    simple_mtx_t handle_to_vbo_mutex;
    struct hash_table_u64 *handle_to_vbo;
+
+   simple_mtx_t blob_cache_mutex;
+   struct list_head blob_cache;
+   uint64_t blob_cache_size;
 
    /* Submission through virtio-gpu are ring based.
     * Ring 0 is used for CPU jobs, then N rings are allocated: 1

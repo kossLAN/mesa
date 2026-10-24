@@ -74,6 +74,7 @@ static void amdvgpu_device_reference(struct amdvgpu_device **dst,
          amdvgpu_bo_free(dev, bo);
       }
       _mesa_hash_table_u64_destroy(dev->handle_to_vbo);
+      amdvgpu_blob_cache_fini(dev);
       /* Destroy contextx. */
       hash_table_foreach(&dev->contexts, entry)
          amdvgpu_cs_ctx_free(dev, (uint32_t)(uintptr_t)entry->key);
@@ -144,6 +145,8 @@ int amdvgpu_device_initialize(int fd, uint32_t *drm_major, uint32_t *drm_minor,
 
    simple_mtx_init(&dev->handle_to_vbo_mutex, mtx_plain);
    simple_mtx_init(&dev->contexts_mutex, mtx_plain);
+   simple_mtx_init(&dev->blob_cache_mutex, mtx_plain);
+   list_inithead(&dev->blob_cache);
 
    dev->handle_to_vbo = _mesa_hash_table_u64_create(NULL);
 

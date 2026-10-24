@@ -43,6 +43,7 @@ int amdvgpu_bo_alloc(amdvgpu_device_handle dev,
                      struct amdgpu_bo_alloc_request *request,
                      amdvgpu_bo_handle *bo);
 int amdvgpu_bo_free(amdvgpu_device_handle dev, struct amdvgpu_bo *bo);
+void amdvgpu_blob_cache_fini(amdvgpu_device_handle dev);
 int amdvgpu_bo_wait_for_idle(amdvgpu_device_handle dev,
                              amdvgpu_bo_handle bo,
                              uint64_t abs_timeout_ns);
