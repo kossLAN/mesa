@@ -24,6 +24,7 @@
 #include "c11/threads.h"
 #include "util/log.h"
 #include "util/macros.h"
+#include "util/os_misc.h"
 #include "util/os_time.h"
 #include "util/simple_mtx.h"
 #include "util/u_dynarray.h"
@@ -90,6 +91,13 @@ struct wddm_device {
    void *cmd_buf;
    UINT cmd_size;
    uint64_t submitted[VIOGPU_MAX_RINGS];
+
+   /* Submissions use VIOGPU_SUBMIT_DIRECT escapes, or D3DKMTRender with
+    * VDRM_WDDM_SUBMIT=render.
+    */
+   bool direct_submit;
+   VIOGPU_ESCAPE *direct_buf;
+   size_t direct_size;
 
    simple_mtx_t bo_lock;
    struct util_idalloc bo_ids;
@@ -182,9 +190,51 @@ open_adapter(struct wddm_device *wd)
 }
 
 static int
+wddm_submit_direct(struct wddm_device *wd, uint32_t ring_idx, const void *cmd, uint32_t size)
+{
+   simple_mtx_assert_locked(&wd->submit_lock);
+   if (size > VIOGPU_SUBMIT_DIRECT_MAX) {
+      mesa_loge("vdrm_wddm: %u byte command exceeds the direct-submit limit", size);
+      return -1;
+   }
+   const size_t need = sizeof(VIOGPU_ESCAPE) + size;
+   if (need > wd->direct_size) {
+      void *buf = realloc(wd->direct_buf, need);
+      if (!buf)
+         return -1;
+      wd->direct_buf = buf;
+      wd->direct_size = need;
+   }
+   memset(wd->direct_buf, 0, sizeof(VIOGPU_ESCAPE));
+   wd->direct_buf->Type = VIOGPU_SUBMIT_DIRECT;
+   wd->direct_buf->DataLength = sizeof(VIOGPU_SUBMIT_DIRECT_REQ);
+   wd->direct_buf->SubmitDirect.RingIdx = ring_idx;
+   wd->direct_buf->SubmitDirect.Size = size;
+   memcpy(wd->direct_buf + 1, cmd, size);
+
+   D3DKMT_ESCAPE e = {
+      .hAdapter = wd->adapter,
+      .hDevice = wd->device,
+      .Type = D3DKMT_ESCAPE_DRIVERPRIVATE,
+      .pPrivateDriverData = wd->direct_buf,
+      .PrivateDriverDataSize = (UINT)need,
+   };
+   NTSTATUS st = wd->kmt.escape(&e);
+   if (!NT_SUCCESS(st)) {
+      mesa_loge("vdrm_wddm: SUBMIT_DIRECT failed: 0x%lx", st);
+      return -1;
+   }
+   if (ring_idx)
+      wd->submitted[ring_idx]++;
+   return 0;
+}
+
+static int
 wddm_render(struct wddm_device *wd, uint32_t ring_idx, const void *cmd, uint32_t size)
 {
    simple_mtx_assert_locked(&wd->submit_lock);
+   if (wd->direct_submit)
+      return wddm_submit_direct(wd, ring_idx, cmd, size);
    if (size + sizeof(VIOGPU_COMMAND_HDR) > wd->cmd_size) {
       mesa_loge("vdrm_wddm: %u byte command exceeds the %u byte DMA buffer", size, wd->cmd_size);
       return -1;
@@ -985,6 +1035,7 @@ wddm_close(struct vdrm_device *vdev)
    util_dynarray_fini(&wd->bos);
    util_idalloc_fini(&wd->bo_ids);
    destroy_blob(wd, &wd->shmem);
+   free(wd->direct_buf);
    /* The fence page is unmapped with the device. Providers may outlive it
     * and must stop reading it first.
     */
@@ -1072,6 +1123,9 @@ vdrm_wddm_connect(uint32_t context_type)
    memcpy(init.CtxInit.DebugName, "mesa-vdrm", sizeof("mesa-vdrm"));
    if (!NT_SUCCESS(wddm_escape(wd, &init, true)))
       goto fail;
+
+   const char *submit = os_get_option("VDRM_WDDM_SUBMIT");
+   wd->direct_submit = !submit || strcmp(submit, "render") != 0;
 
    D3DKMT_CREATECONTEXT cc = {.hDevice = wd->device, .ClientHint = D3DKMT_CLIENTHINT_VULKAN};
    if (!NT_SUCCESS(wd->kmt.createContext(&cc)))
