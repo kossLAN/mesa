@@ -636,9 +636,29 @@ sync_attach_submit(struct wddm_sync_state *s, const struct drm_virtgpu_execbuffe
    mtx_unlock(&s->lock);
 }
 
+/* True if a submission to `ring` cannot run before the fences a wait for
+ * `value` depends on: they are signaled already or were submitted earlier
+ * to the same ring, which the host and the GPU execute in order. Called
+ * with the sync state locked.
+ */
+static bool
+sync_ordered_before(const struct wddm_sync_state *s, const struct wddm_syncobj *o, uint64_t value,
+                    uint32_t ring)
+{
+   bool any = false;
+   util_dynarray_foreach (&o->points, struct wddm_point, p) {
+      if (!point_signaled(s, p) && p->ring != ring)
+         return false;
+      any = true;
+      if (p->value >= value)
+         return true;
+   }
+   return any && sync_payload(s, o) >= value;
+}
+
 static int
 wddm_wait_syncobjs(struct wddm_device *wd, const struct drm_virtgpu_execbuffer_syncobj *ins,
-                   uint32_t count)
+                   uint32_t count, uint32_t ring)
 {
    if (!count)
       return 0;
@@ -650,10 +670,23 @@ wddm_wait_syncobjs(struct wddm_device *wd, const struct drm_virtgpu_execbuffer_s
       return -ENOMEM;
    }
    bool timeline = false;
+   uint32_t waits = 0;
+   mtx_lock(&wd->sync->lock);
    for (uint32_t i = 0; i < count; i++) {
-      handles[i] = ins[i].handle;
-      points[i] = ins[i].point;
+      struct wddm_syncobj *o = sync_lookup(wd->sync, ins[i].handle);
+      if (ring && o && sync_ordered_before(wd->sync, o, ins[i].point, ring))
+         continue;
+      handles[waits] = ins[i].handle;
+      points[waits] = ins[i].point;
       timeline |= ins[i].point != 0;
+      waits++;
+   }
+   mtx_unlock(&wd->sync->lock);
+   count = waits;
+   if (!count) {
+      free(handles);
+      free(points);
+      return 0;
    }
    const unsigned flags = DRM_SYNCOBJ_WAIT_FLAGS_WAIT_ALL | DRM_SYNCOBJ_WAIT_FLAGS_WAIT_FOR_SUBMIT;
    int r = sync_wait_common(wd->sync, handles, timeline ? points : NULL, count, INT64_MAX, flags,
@@ -669,7 +702,7 @@ wddm_execbuf_locked(struct vdrm_device *vdev, struct vdrm_execbuf_params *p, voi
 {
    struct wddm_device *wd = to_wddm_device(vdev);
 
-   int r = wddm_wait_syncobjs(wd, p->in_syncobjs, p->num_in_syncobjs);
+   int r = wddm_wait_syncobjs(wd, p->in_syncobjs, p->num_in_syncobjs, p->ring_idx);
    if (r)
       return r;
 
