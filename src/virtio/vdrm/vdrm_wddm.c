@@ -19,6 +19,7 @@
 #include "vdrm.h"
 
 #include "drm-uapi/drm.h"
+#include "drm-uapi/drm_fourcc.h"
 #include "drm-uapi/virtgpu_drm.h"
 #include "c11/threads.h"
 #include "util/log.h"
@@ -896,6 +897,57 @@ wddm_bo_export_dmabuf(struct vdrm_device *vdev, uint32_t handle)
    return -1;
 }
 
+/* virtio-gpu formats are named by their byte order, DRM's by the order in a
+ * little-endian word.
+ */
+static uint32_t
+virtio_gpu_format(uint32_t drm_format)
+{
+   switch (drm_format) {
+   case DRM_FORMAT_XRGB8888:
+      return 2; /* VIRTIO_GPU_FORMAT_B8G8R8X8_UNORM */
+   case DRM_FORMAT_ARGB8888:
+      return 1; /* VIRTIO_GPU_FORMAT_B8G8R8A8_UNORM */
+   case DRM_FORMAT_XBGR8888:
+      return 134; /* VIRTIO_GPU_FORMAT_R8G8B8X8_UNORM */
+   case DRM_FORMAT_ABGR8888:
+      return 67; /* VIRTIO_GPU_FORMAT_R8G8B8A8_UNORM */
+   default:
+      return 0;
+   }
+}
+
+static int
+wddm_bo_scanout(struct vdrm_device *vdev, uint32_t handle, uint32_t width, uint32_t height,
+                uint32_t stride, uint32_t drm_format)
+{
+   struct wddm_device *wd = to_wddm_device(vdev);
+   VIOGPU_ESCAPE esc = {
+      .Type = VIOGPU_SCANOUT_BLOB,
+      .DataLength = sizeof(VIOGPU_SCANOUT_BLOB_REQ),
+   };
+
+   if (handle) {
+      simple_mtx_lock(&wd->bo_lock);
+      struct wddm_bo *bo = bo_lookup(wd, handle);
+      esc.ScanoutBlob.ResHandle = bo ? bo->alloc : 0;
+      simple_mtx_unlock(&wd->bo_lock);
+      esc.ScanoutBlob.Format = virtio_gpu_format(drm_format);
+      if (!esc.ScanoutBlob.ResHandle || !esc.ScanoutBlob.Format)
+         return -EINVAL;
+      esc.ScanoutBlob.Width = width;
+      esc.ScanoutBlob.Height = height;
+      esc.ScanoutBlob.Stride = stride;
+   }
+
+   NTSTATUS st = wddm_escape(wd, &esc, true);
+   if (!NT_SUCCESS(st)) {
+      mesa_loge("vdrm_wddm: SCANOUT_BLOB failed: 0x%lx", st);
+      return -EINVAL;
+   }
+   return 0;
+}
+
 static void
 destroy_blob(struct wddm_device *wd, struct wddm_bo *bo)
 {
@@ -971,6 +1023,7 @@ static const struct vdrm_device_funcs funcs = {
    .bo_unmap = wddm_bo_unmap,
    .bo_export_dmabuf = wddm_bo_export_dmabuf,
    .bo_close = wddm_bo_close,
+   .bo_scanout = wddm_bo_scanout,
    .close = wddm_close,
 };
 

@@ -263,6 +263,18 @@ int amdvgpu_bo_free(amdvgpu_device_handle dev, struct amdvgpu_bo *bo) {
    return 0;
 }
 
+int amdvgpu_bo_scanout(amdvgpu_device_handle dev, amdvgpu_bo_handle bo, uint32_t width,
+                       uint32_t height, uint32_t stride, uint32_t drm_format)
+{
+   if (!bo)
+      return vdrm_bo_scanout(dev->vdev, 0, 0, 0, 0, 0);
+   /* Only shareable blobs are exported on the host. */
+   if (!(bo->host_blob->blob_flags & VIRTGPU_BLOB_FLAG_USE_SHAREABLE))
+      return -EINVAL;
+   bo->host_blob->cacheable = false;
+   return vdrm_bo_scanout(dev->vdev, bo->host_blob->handle, width, height, stride, drm_format);
+}
+
 int amdvgpu_bo_alloc(amdvgpu_device_handle dev,
                      struct amdgpu_bo_alloc_request *request,
                      amdvgpu_bo_handle *bo)

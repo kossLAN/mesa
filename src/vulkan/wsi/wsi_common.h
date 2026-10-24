@@ -145,6 +145,9 @@ struct wsi_device {
       VkResult (*create_image_memory)(VkDevice device, void *resource,
                                       const VkAllocationCallbacks *alloc,
                                       VkDeviceMemory *out);
+      VkResult (*scanout)(VkDevice device, VkDeviceMemory memory,
+                          uint32_t width, uint32_t height, uint32_t stride,
+                          VkFormat format);
    } win32;
 
    struct {

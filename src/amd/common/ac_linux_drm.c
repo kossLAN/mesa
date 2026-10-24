@@ -920,6 +920,16 @@ int ac_drm_bo_export(ac_drm_device *dev, ac_drm_bo bo,
    return amdgpu_bo_export(bo.abo, type, shared_handle);
 }
 
+int ac_drm_bo_scanout(ac_drm_device *dev, ac_drm_bo *bo, uint32_t width, uint32_t height,
+                      uint32_t stride, uint32_t drm_format)
+{
+#ifdef HAVE_AMDGPU_VIRTIO
+   if (dev->is_virtio)
+      return amdvgpu_bo_scanout(dev->vdev, bo ? bo->vbo : NULL, width, height, stride, drm_format);
+#endif
+   return -ENOSYS;
+}
+
 int ac_drm_bo_import(ac_drm_device *dev, enum amdgpu_bo_handle_type type,
                      uint32_t shared_handle, struct ac_drm_bo_import_result *output)
 {

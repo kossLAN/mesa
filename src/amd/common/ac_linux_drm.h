@@ -441,6 +441,8 @@ MESAPROC int ac_drm_bo_export(ac_drm_device *dev, ac_drm_bo bo,
                           enum amdgpu_bo_handle_type type, uint32_t *shared_handle) TAIL;
 MESAPROC int ac_drm_bo_import(ac_drm_device *dev, enum amdgpu_bo_handle_type type,
                           uint32_t shared_handle, struct ac_drm_bo_import_result *output) TAIL;
+MESAPROC int ac_drm_bo_scanout(ac_drm_device *dev, ac_drm_bo *bo, uint32_t width,
+                           uint32_t height, uint32_t stride, uint32_t drm_format) TAIL;
 MESAPROC int ac_drm_create_bo_from_user_mem(ac_drm_device *dev, void *cpu,
                                         uint64_t size, ac_drm_bo *bo) TAIL;
 MESAPROC int ac_drm_bo_free(ac_drm_device *dev, ac_drm_bo bo) TAIL;

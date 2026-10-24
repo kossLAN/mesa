@@ -992,6 +992,16 @@ error:
    return vk_result;
 }
 
+static int
+radv_amdgpu_winsys_bo_scanout(struct radeon_winsys *_ws, struct radeon_winsys_bo *_bo, uint32_t width,
+                              uint32_t height, uint32_t stride, uint32_t drm_format)
+{
+   struct radv_amdgpu_winsys *ws = radv_amdgpu_winsys(_ws);
+   struct radv_amdgpu_winsys_bo *bo = _bo ? radv_amdgpu_winsys_bo(_bo) : NULL;
+
+   return ac_drm_bo_scanout(ws->dev, bo ? &bo->bo : NULL, width, height, stride, drm_format);
+}
+
 static bool
 radv_amdgpu_winsys_get_fd(struct radeon_winsys *_ws, struct radeon_winsys_bo *_bo, int *fd)
 {
@@ -1339,6 +1349,8 @@ radv_amdgpu_bo_init_functions(struct radv_amdgpu_winsys *ws)
    ws->base.buffer_virtual_bind = radv_amdgpu_winsys_bo_virtual_bind;
    ws->base.buffer_get_flags_from_fd = radv_amdgpu_bo_get_flags_from_fd;
    ws->base.buffer_make_resident = radv_amdgpu_winsys_bo_make_resident;
+   if (ws->info.is_virtio)
+      ws->base.buffer_scanout = radv_amdgpu_winsys_bo_scanout;
    ws->base.dump_bo_ranges = radv_amdgpu_dump_bo_ranges;
    ws->base.dump_bo_log = radv_amdgpu_dump_bo_log;
    ws->base.bo_wait_for_idle = radv_amdgpu_bo_wait_for_idle;

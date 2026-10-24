@@ -18,6 +18,7 @@
 #include "radv_queue.h"
 #include "radv_shader.h"
 
+#include "drm-uapi/drm_fourcc.h"
 #include "tools/radv_debug.h"
 #include "wsi_common.h"
 
@@ -90,6 +91,34 @@ radv_wsi_get_prime_blit_queue(VkDevice _device)
    return NULL;
 }
 
+static VkResult
+radv_wsi_scanout(VkDevice _device, VkDeviceMemory _mem, uint32_t width, uint32_t height, uint32_t stride,
+                 VkFormat format)
+{
+   VK_FROM_HANDLE(radv_device, device, _device);
+   VK_FROM_HANDLE(radv_device_memory, mem, _mem);
+   uint32_t drm_format = 0;
+
+   if (mem) {
+      switch (format) {
+      case VK_FORMAT_B8G8R8A8_UNORM:
+      case VK_FORMAT_B8G8R8A8_SRGB:
+         drm_format = DRM_FORMAT_XRGB8888;
+         break;
+      case VK_FORMAT_R8G8B8A8_UNORM:
+      case VK_FORMAT_R8G8B8A8_SRGB:
+         drm_format = DRM_FORMAT_XBGR8888;
+         break;
+      default:
+         return VK_ERROR_FORMAT_NOT_SUPPORTED;
+      }
+   }
+
+   if (device->ws->buffer_scanout(device->ws, mem ? mem->bo : NULL, width, height, stride, drm_format))
+      return VK_ERROR_SURFACE_LOST_KHR;
+   return VK_SUCCESS;
+}
+
 VkResult
 radv_init_wsi(struct radv_physical_device *pdev)
 {
@@ -107,6 +136,8 @@ radv_init_wsi(struct radv_physical_device *pdev)
    pdev->wsi_device.set_memory_ownership = radv_wsi_set_memory_ownership;
    if (!cpu_present)
       pdev->wsi_device.get_blit_queue = radv_wsi_get_prime_blit_queue;
+   if (cpu_present && pdev->info.is_virtio)
+      pdev->wsi_device.win32.scanout = radv_wsi_scanout;
 
    for (uint32_t i = 0; i < ARRAY_SIZE(pdev->wsi_device.supports_protected); i++) {
       pdev->wsi_device.supports_protected[i] = radv_tmz_enabled(pdev);

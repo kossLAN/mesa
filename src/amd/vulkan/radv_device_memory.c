@@ -224,7 +224,7 @@ radv_alloc_memory(struct radv_device *device, const VkMemoryAllocateInfo *pAlloc
           */
          if (domain == RADEON_DOMAIN_VRAM)
             flags |= RADEON_FLAG_GTT_WC;
-      } else if (!import_info) {
+      } else if (!import_info && !(wsi_info && wsi_info->scanout)) {
          /* neither export nor import */
          flags |= RADEON_FLAG_NO_INTERPROCESS_SHARING | RADEON_FLAG_PREFER_LOCAL_BO;
       }

@@ -52,6 +52,8 @@ struct wsi_memory_allocate_info {
      */
     bool implicit_sync;
 
+    bool scanout;
+
     /**
      * If set, then the WSI will attach implicit synchronization's fences to
      * (and reference implicit sync fences from) the dma-buf for this memory, to

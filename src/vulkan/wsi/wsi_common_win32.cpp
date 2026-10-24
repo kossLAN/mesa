@@ -27,6 +27,7 @@
 #include <string.h>
 
 #include "util/cnd_monotonic.h"
+#include "util/os_misc.h"
 #include "util/timespec.h"
 #include "util/u_thread.h"
 #include "vk_format.h"
@@ -65,6 +66,7 @@ enum wsi_win32_image_state {
    WSI_IMAGE_IDLE,
    WSI_IMAGE_DRAWING,
    WSI_IMAGE_QUEUED,
+   WSI_IMAGE_SCANOUT,
 };
 
 struct wsi_win32_image {
@@ -108,8 +110,11 @@ struct wsi_win32_swapchain {
    uint64_t                     flip_sequence;
    VkResult                     status;
    VkExtent2D                 extent;
+   VkFormat                   format;
    HWND wnd;
    HDC chain_dc;
+
+   bool scanout;
 
    /* Without DXGI, a thread copies queued images to the window. Protected by
     * acquire_mutex.
@@ -121,6 +126,7 @@ struct wsi_win32_swapchain {
       struct u_cnd_monotonic cond;
       uint64_t seq;
       struct wsi_win32_image *busy;
+      struct wsi_win32_image *shown;
    } present;
 
    struct wsi_win32_image     images[0];
@@ -570,7 +576,7 @@ wsi_win32_image_init(VkDevice device_h,
    chain->wnd = win32_surface->hwnd;
    image->chain = chain;
 
-   if (chain->dxgi)
+   if (chain->dxgi || chain->scanout)
       return VK_SUCCESS;
 
    chain->chain_dc = GetDC(chain->wnd);
@@ -629,10 +635,15 @@ wsi_win32_swapchain_destroy(struct wsi_swapchain *drv_chain,
       thrd_join(chain->present.thread, NULL);
    }
 
+   /* The display output must stop reading before the memory goes away. */
+   if (chain->present.shown)
+      chain->wsi->wsi->win32.scanout(chain->base.device, VK_NULL_HANDLE, 0, 0, 0, chain->format);
+
    for (uint32_t i = 0; i < chain->base.image_count; i++)
       wsi_win32_image_finish(chain, allocator, &chain->images[i]);
 
-   DeleteDC(chain->chain_dc);
+   if (chain->chain_dc)
+      DeleteDC(chain->chain_dc);
 
    if (chain->surface->current_swapchain == chain)
       chain->surface->current_swapchain = NULL;
@@ -844,6 +855,14 @@ wsi_win32_copy_to_window(struct wsi_win32_swapchain *chain, struct wsi_win32_ima
    return VK_SUCCESS;
 }
 
+static VkResult
+wsi_win32_scanout(struct wsi_win32_swapchain *chain, struct wsi_win32_image *image)
+{
+   return chain->wsi->wsi->win32.scanout(chain->base.device, image->base.blit.memory,
+                                         chain->extent.width, chain->extent.height,
+                                         image->base.row_pitches[0], chain->format);
+}
+
 /* Called with acquire_mutex held. */
 static struct wsi_win32_image *
 wsi_win32_oldest_queued(struct wsi_win32_swapchain *chain)
@@ -884,13 +903,21 @@ wsi_win32_present_thread(void *data)
       VkResult result = wsi->WaitForFences(chain->base.device, 1, &chain->base.fences[index],
                                            true, UINT64_MAX);
       if (result == VK_SUCCESS)
-         result = wsi_win32_copy_to_window(chain, image);
+         result = chain->scanout ? wsi_win32_scanout(chain, image)
+                                 : wsi_win32_copy_to_window(chain, image);
 
       mtx_lock(&chain->acquire_mutex);
       if (result != VK_SUCCESS)
          chain->status = result;
       chain->present.busy = NULL;
-      image->state = WSI_IMAGE_IDLE;
+      if (chain->scanout && result == VK_SUCCESS) {
+         if (chain->present.shown)
+            chain->present.shown->state = WSI_IMAGE_IDLE;
+         chain->present.shown = image;
+         image->state = WSI_IMAGE_SCANOUT;
+      } else {
+         image->state = WSI_IMAGE_IDLE;
+      }
       u_cnd_monotonic_broadcast(&chain->acquire_cond);
    }
    mtx_unlock(&chain->acquire_mutex);
@@ -1004,6 +1031,34 @@ wsi_win32_surface_create_swapchain_dxgi(
    return VK_SUCCESS;
 }
 
+/* MESA_VK_WSI_WIN32_SCANOUT=auto (default) scans out swapchains of windows
+ * that cover their whole monitor, i.e. fullscreen ones. "always" and "never"
+ * force the choice.
+ */
+static bool
+wsi_win32_wants_scanout(const struct wsi_device *wsi_device, HWND hwnd)
+{
+   if (!wsi_device->win32.scanout)
+      return false;
+
+   const char *mode = os_get_option("MESA_VK_WSI_WIN32_SCANOUT");
+   if (mode && !strcmp(mode, "never"))
+      return false;
+   if (mode && !strcmp(mode, "always"))
+      return true;
+
+   MONITORINFO monitor = {};
+   monitor.cbSize = sizeof(monitor);
+   RECT client;
+   POINT origin = {0, 0};
+   if (!GetClientRect(hwnd, &client) || !ClientToScreen(hwnd, &origin) ||
+       !GetMonitorInfoW(MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST), &monitor))
+      return false;
+   return origin.x == monitor.rcMonitor.left && origin.y == monitor.rcMonitor.top &&
+          client.right == monitor.rcMonitor.right - monitor.rcMonitor.left &&
+          client.bottom == monitor.rcMonitor.bottom - monitor.rcMonitor.top;
+}
+
 static VkResult
 wsi_win32_surface_create_swapchain(
    VkIcdSurfaceBase *icd_surface,
@@ -1019,7 +1074,11 @@ wsi_win32_surface_create_swapchain(
 
    assert(create_info->sType == VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR);
 
-   const unsigned num_images = create_info->minImageCount;
+   const bool scanout = wsi_win32_wants_scanout(wsi_device, surface->base.hwnd);
+   /* A scanned-out image stays busy until the display has taken the next
+    * one.
+    */
+   const unsigned num_images = create_info->minImageCount + (scanout ? 1 : 0);
    struct wsi_win32_swapchain *chain;
    size_t size = sizeof(*chain) + num_images * sizeof(chain->images[0]);
 
@@ -1060,6 +1119,7 @@ wsi_win32_surface_create_swapchain(
    struct wsi_cpu_image_params cpu_image_params = {
       { WSI_IMAGE_TYPE_CPU },
    };
+   cpu_image_params.scanout = scanout;
 
    bool supports_dxgi = wsi->dxgi.factory &&
                         wsi->dxgi.dcomp &&
@@ -1085,6 +1145,9 @@ wsi_win32_surface_create_swapchain(
    chain->base.queue_present = wsi_win32_queue_present;
    chain->base.present_mode = wsi_swapchain_get_present_mode(wsi_device, create_info);
    chain->extent = create_info->imageExtent;
+   chain->format = create_info->imageFormat;
+   chain->scanout = image_params == &cpu_image_params.base && cpu_image_params.scanout &&
+                    chain->base.blit.type == WSI_SWAPCHAIN_BUFFER_BLIT;
 
    chain->wsi = wsi;
    chain->status = VK_SUCCESS;

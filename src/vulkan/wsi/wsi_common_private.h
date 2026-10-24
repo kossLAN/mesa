@@ -59,6 +59,8 @@ struct wsi_cpu_image_params {
    struct wsi_base_image_params base;
 
    uint8_t *(*alloc_shm)(struct wsi_image *image, unsigned size);
+
+   bool scanout;
 };
 
 struct wsi_drm_image_params {
@@ -120,6 +122,8 @@ struct wsi_image_info {
 
    /* For buffer blit images, the size of the buffer in bytes */
    uint64_t linear_size;
+
+   bool blit_dst_scanout;
 
    wsi_memory_type_select_cb select_image_memory_type;
    wsi_memory_type_select_cb select_blit_dst_memory_type;

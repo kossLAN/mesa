@@ -12,6 +12,7 @@
 #ifndef __VDRM_H__
 #define __VDRM_H__
 
+#include <errno.h>
 #include <stdint.h>
 
 #include "util/simple_mtx.h"
@@ -48,6 +49,8 @@ struct vdrm_device_funcs {
    void (*bo_unmap)(struct vdrm_device *vdev, uint32_t handle, void *addr, size_t size);
    int (*bo_export_dmabuf)(struct vdrm_device *vdev, uint32_t handle);
    void (*bo_close)(struct vdrm_device *vdev, uint32_t handle);
+   int (*bo_scanout)(struct vdrm_device *vdev, uint32_t handle, uint32_t width,
+                     uint32_t height, uint32_t stride, uint32_t drm_format);
 
    void (*close)(struct vdrm_device *vdev);
 };
@@ -163,6 +166,15 @@ static inline void
 vdrm_bo_close(struct vdrm_device *vdev, uint32_t handle)
 {
    vdev->funcs->bo_close(vdev, handle);
+}
+
+static inline int
+vdrm_bo_scanout(struct vdrm_device *vdev, uint32_t handle, uint32_t width,
+                uint32_t height, uint32_t stride, uint32_t drm_format)
+{
+   if (!vdev->funcs->bo_scanout)
+      return -ENOSYS;
+   return vdev->funcs->bo_scanout(vdev, handle, width, height, stride, drm_format);
 }
 
 /*

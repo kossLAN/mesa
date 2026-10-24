@@ -262,6 +262,9 @@ struct radeon_winsys {
 
    VkResult (*buffer_make_resident)(struct radeon_winsys *ws, struct radeon_winsys_bo *bo, bool resident);
 
+   int (*buffer_scanout)(struct radeon_winsys *ws, struct radeon_winsys_bo *bo, uint32_t width, uint32_t height,
+                         uint32_t stride, uint32_t drm_format);
+
    VkResult (*ctx_create)(struct radeon_winsys *ws, enum radeon_ctx_priority priority, struct radeon_winsys_ctx **ctx);
    void (*ctx_destroy)(struct radeon_winsys_ctx *ctx);
 

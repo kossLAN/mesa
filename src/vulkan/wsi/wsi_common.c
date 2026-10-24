@@ -3130,6 +3130,7 @@ wsi_create_buffer_blit_context(const struct wsi_swapchain *chain,
       .implicit_sync = info->image_type == WSI_IMAGE_TYPE_DRM &&
                        !info->explicit_sync && !chain->dma_buf_semaphore,
       .dma_buf_sync_file = chain->dma_buf_semaphore,
+      .scanout = info->blit_dst_scanout,
    };
    VkMemoryDedicatedAllocateInfo buf_mem_dedicated_info = {
       .sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO,
@@ -3576,6 +3577,14 @@ wsi_create_cpu_linear_image_mem(const struct wsi_swapchain *chain,
 }
 
 static VkResult
+wsi_create_scanout_buffer_image_mem(const struct wsi_swapchain *chain,
+                                    const struct wsi_image_info *info,
+                                    struct wsi_image *image)
+{
+   return wsi_create_buffer_blit_context(chain, info, image, 0);
+}
+
+static VkResult
 wsi_create_cpu_buffer_image_mem(const struct wsi_swapchain *chain,
                                 const struct wsi_image_info *info,
                                 struct wsi_image *image)
@@ -3626,7 +3635,18 @@ wsi_configure_cpu_image(const struct wsi_swapchain *chain,
    if (result != VK_SUCCESS)
       return result;
 
-   if (chain->blit.type != WSI_SWAPCHAIN_NO_BLIT) {
+   if (chain->blit.type != WSI_SWAPCHAIN_NO_BLIT && params->scanout) {
+      /* Display engines want 256-byte aligned linear pitches. */
+      wsi_configure_buffer_image(chain, pCreateInfo,
+                                 256 /* stride_align */,
+                                 4096 /* size_align */,
+                                 info);
+
+      info->blit_dst_scanout = true;
+      info->select_blit_dst_memory_type = wsi_select_device_memory_type;
+      info->select_image_memory_type = wsi_select_device_memory_type;
+      info->create_mem = wsi_create_scanout_buffer_image_mem;
+   } else if (chain->blit.type != WSI_SWAPCHAIN_NO_BLIT) {
       wsi_configure_buffer_image(chain, pCreateInfo,
                                  1 /* stride_align */,
                                  1 /* size_align */,

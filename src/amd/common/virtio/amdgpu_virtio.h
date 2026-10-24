@@ -38,6 +38,8 @@ int amdvgpu_bo_export(amdvgpu_device_handle dev, amdvgpu_bo_handle bo,
                       enum amdgpu_bo_handle_type type,
                       uint32_t *shared_handle);
 int amdvgpu_bo_cpu_map(amdvgpu_device_handle dev, amdvgpu_bo_handle bo_handle, void **cpu);
+int amdvgpu_bo_scanout(amdvgpu_device_handle dev, amdvgpu_bo_handle bo, uint32_t width,
+                       uint32_t height, uint32_t stride, uint32_t drm_format);
 int amdvgpu_bo_cpu_unmap(amdvgpu_device_handle dev, amdvgpu_bo_handle bo);
 int amdvgpu_bo_alloc(amdvgpu_device_handle dev,
                      struct amdgpu_bo_alloc_request *request,
