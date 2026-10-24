@@ -69,8 +69,10 @@ enum radv_gfx12_hiz_wa {
 
 #ifdef _WIN32
 #define RADV_FD_EXTERNAL_HANDLES false
+#define RADV_WIN32_EXTERNAL_HANDLES true
 #else
 #define RADV_FD_EXTERNAL_HANDLES true
+#define RADV_WIN32_EXTERNAL_HANDLES false
 #endif
 
 enum radv_drm_device_type {

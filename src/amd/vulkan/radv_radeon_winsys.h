@@ -54,6 +54,8 @@ enum radeon_bo_flag { /* bitfield */
                       RADEON_FLAG_VM_PAD_1PAGE = (1 << 15),
                       RADEON_FLAG_ENCRYPTED = (1 << 16),
                       RADEON_FLAG_EMULATE_SPARSE_RESIDENCY = (1 << 17),
+                      RADEON_FLAG_WIN32_KMT = (1 << 18),
+                      RADEON_FLAG_WIN32_NT = (1 << 19),
 };
 
 enum radeon_ctx_priority {
@@ -251,6 +253,12 @@ struct radeon_winsys {
 
    bool (*buffer_get_flags_from_fd)(struct radeon_winsys *ws, int fd, enum radeon_bo_domain *domains,
                                     enum radeon_bo_flag *flags);
+
+   VkResult (*buffer_from_win32_handle)(struct radeon_winsys *ws, uint32_t handle, bool nt, unsigned priority,
+                                        struct radeon_winsys_bo **out_bo, uint64_t *alloc_size);
+
+   bool (*buffer_get_win32_handle)(struct radeon_winsys *ws, struct radeon_winsys_bo *bo, bool nt,
+                                   uint32_t *handle);
 
    void (*buffer_unmap)(struct radeon_winsys *ws, struct radeon_winsys_bo *bo, bool replace);
 

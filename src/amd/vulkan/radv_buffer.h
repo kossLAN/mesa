@@ -47,4 +47,9 @@ VkResult radv_bo_from_fd(struct radv_device *device, int fd, unsigned priority, 
 VkResult radv_bo_from_ptr(struct radv_device *device, void *host_ptr, uint64_t alloc_size, unsigned priority,
                           struct radv_device_memory *mem);
 
+#ifdef VK_USE_PLATFORM_WIN32_KHR
+VkResult radv_bo_from_win32_handle(struct radv_device *device, HANDLE handle, bool nt, unsigned priority,
+                                   struct radv_device_memory *mem);
+#endif
+
 #endif /* RADV_BUFFER_H */

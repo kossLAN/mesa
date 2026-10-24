@@ -13,6 +13,7 @@
 #define __VDRM_H__
 
 #include <errno.h>
+#include <stdbool.h>
 #include <stdint.h>
 
 #include "util/simple_mtx.h"
@@ -51,6 +52,10 @@ struct vdrm_device_funcs {
    void (*bo_close)(struct vdrm_device *vdev, uint32_t handle);
    int (*bo_scanout)(struct vdrm_device *vdev, uint32_t handle, uint32_t width,
                      uint32_t height, uint32_t stride, uint32_t drm_format);
+   int (*bo_export_win32)(struct vdrm_device *vdev, uint32_t handle, bool nt,
+                          uint32_t *win32_handle);
+   uint32_t (*win32_to_handle)(struct vdrm_device *vdev, uint32_t win32_handle, bool nt,
+                               uint64_t *size);
 
    void (*close)(struct vdrm_device *vdev);
 };
@@ -133,6 +138,9 @@ vdrm_handle_to_res_id(struct vdrm_device *vdev, uint32_t handle)
    return vdev->funcs->handle_to_res_id(vdev, handle);
 }
 
+#define VDRM_BLOB_FLAG_WIN32_KMT (1u << 30)
+#define VDRM_BLOB_FLAG_WIN32_NT  (1u << 31)
+
 uint32_t vdrm_bo_create(struct vdrm_device *vdev, size_t size,
                         uint32_t blob_flags, uint64_t blob_id,
                         uint32_t blob_hints,
@@ -175,6 +183,22 @@ vdrm_bo_scanout(struct vdrm_device *vdev, uint32_t handle, uint32_t width,
    if (!vdev->funcs->bo_scanout)
       return -ENOSYS;
    return vdev->funcs->bo_scanout(vdev, handle, width, height, stride, drm_format);
+}
+
+static inline int
+vdrm_bo_export_win32(struct vdrm_device *vdev, uint32_t handle, bool nt, uint32_t *win32_handle)
+{
+   if (!vdev->funcs->bo_export_win32)
+      return -ENOSYS;
+   return vdev->funcs->bo_export_win32(vdev, handle, nt, win32_handle);
+}
+
+static inline uint32_t
+vdrm_win32_to_handle(struct vdrm_device *vdev, uint32_t win32_handle, bool nt, uint64_t *size)
+{
+   if (!vdev->funcs->win32_to_handle)
+      return 0;
+   return vdev->funcs->win32_to_handle(vdev, win32_handle, nt, size);
 }
 
 /*

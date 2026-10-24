@@ -616,6 +616,10 @@ radv_amdgpu_winsys_bo_create(struct radeon_winsys *_ws, uint64_t size, unsigned 
    if (ws->info.is_virtio && (initial_domain & RADEON_DOMAIN_VRAM_GTT) &&
        (flags & RADEON_FLAG_NO_INTERPROCESS_SHARING) == 0)
       request.flags |= AMDGPU_GEM_CREATE_VIRTIO_SHARED;
+   if (ws->info.is_virtio && (flags & RADEON_FLAG_WIN32_KMT))
+      request.flags |= AMDGPU_GEM_CREATE_VIRTIO_WIN32_KMT;
+   if (ws->info.is_virtio && (flags & RADEON_FLAG_WIN32_NT))
+      request.flags |= AMDGPU_GEM_CREATE_VIRTIO_WIN32_NT;
    if (initial_domain & RADEON_DOMAIN_VRAM) {
       if (ws->zero_all_vram_allocs || (flags & RADEON_FLAG_ZERO_VRAM))
          request.flags |= AMDGPU_GEM_CREATE_VRAM_CLEARED;
@@ -891,14 +895,13 @@ error:
 }
 
 static VkResult
-radv_amdgpu_winsys_bo_from_fd(struct radeon_winsys *_ws, int fd, unsigned priority, struct radeon_winsys_bo **out_bo,
-                              uint64_t *alloc_size)
+radv_amdgpu_winsys_bo_from_handle(struct radeon_winsys *_ws, enum amdgpu_bo_handle_type type, uint32_t handle,
+                                  unsigned priority, struct radeon_winsys_bo **out_bo, uint64_t *alloc_size)
 {
    struct radv_amdgpu_winsys *ws = radv_amdgpu_winsys(_ws);
    struct radv_amdgpu_winsys_bo *bo;
    uint64_t va;
    amdgpu_va_handle va_handle;
-   enum amdgpu_bo_handle_type type = amdgpu_bo_handle_type_dma_buf_fd;
    struct ac_drm_bo_import_result result;
    struct amdgpu_bo_info info;
    enum radeon_bo_domain initial = 0;
@@ -913,7 +916,7 @@ radv_amdgpu_winsys_bo_from_fd(struct radeon_winsys *_ws, int fd, unsigned priori
    if (!bo)
       return VK_ERROR_OUT_OF_HOST_MEMORY;
 
-   r = ac_drm_bo_import(ws->dev, type, fd, &result);
+   r = ac_drm_bo_import(ws->dev, type, handle, &result);
    if (r) {
       vk_result = VK_ERROR_INVALID_EXTERNAL_HANDLE;
       goto error;
@@ -991,6 +994,35 @@ error:
    FREE(bo);
    return vk_result;
 }
+
+static VkResult
+radv_amdgpu_winsys_bo_from_fd(struct radeon_winsys *_ws, int fd, unsigned priority, struct radeon_winsys_bo **out_bo,
+                              uint64_t *alloc_size)
+{
+   return radv_amdgpu_winsys_bo_from_handle(_ws, amdgpu_bo_handle_type_dma_buf_fd, fd, priority, out_bo, alloc_size);
+}
+
+#ifdef _WIN32
+static VkResult
+radv_amdgpu_winsys_bo_from_win32_handle(struct radeon_winsys *_ws, uint32_t handle, bool nt, unsigned priority,
+                                        struct radeon_winsys_bo **out_bo, uint64_t *alloc_size)
+{
+   enum amdgpu_bo_handle_type type =
+      nt ? AMDGPU_BO_HANDLE_TYPE_VIRTIO_WIN32_NT : AMDGPU_BO_HANDLE_TYPE_VIRTIO_WIN32_KMT;
+   return radv_amdgpu_winsys_bo_from_handle(_ws, type, handle, priority, out_bo, alloc_size);
+}
+
+static bool
+radv_amdgpu_winsys_get_win32_handle(struct radeon_winsys *_ws, struct radeon_winsys_bo *_bo, bool nt,
+                                    uint32_t *handle)
+{
+   struct radv_amdgpu_winsys *ws = radv_amdgpu_winsys(_ws);
+   struct radv_amdgpu_winsys_bo *bo = radv_amdgpu_winsys_bo(_bo);
+   enum amdgpu_bo_handle_type type =
+      nt ? AMDGPU_BO_HANDLE_TYPE_VIRTIO_WIN32_NT : AMDGPU_BO_HANDLE_TYPE_VIRTIO_WIN32_KMT;
+   return ac_drm_bo_export(ws->dev, bo->bo, type, handle) == 0;
+}
+#endif
 
 static int
 radv_amdgpu_winsys_bo_scanout(struct radeon_winsys *_ws, struct radeon_winsys_bo *_bo, uint32_t width,
@@ -1351,6 +1383,10 @@ radv_amdgpu_bo_init_functions(struct radv_amdgpu_winsys *ws)
    ws->base.buffer_make_resident = radv_amdgpu_winsys_bo_make_resident;
    if (ws->info.is_virtio)
       ws->base.buffer_scanout = radv_amdgpu_winsys_bo_scanout;
+#ifdef _WIN32
+   ws->base.buffer_from_win32_handle = radv_amdgpu_winsys_bo_from_win32_handle;
+   ws->base.buffer_get_win32_handle = radv_amdgpu_winsys_get_win32_handle;
+#endif
    ws->base.dump_bo_ranges = radv_amdgpu_dump_bo_ranges;
    ws->base.dump_bo_log = radv_amdgpu_dump_bo_log;
    ws->base.bo_wait_for_idle = radv_amdgpu_bo_wait_for_idle;

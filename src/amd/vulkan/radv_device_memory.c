@@ -83,6 +83,10 @@ radv_alloc_memory(struct radv_device *device, const VkMemoryAllocateInfo *pAlloc
    assert(pAllocateInfo->sType == VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO);
 
    const VkImportMemoryFdInfoKHR *import_info = vk_find_struct_const(pAllocateInfo->pNext, IMPORT_MEMORY_FD_INFO_KHR);
+#ifdef VK_USE_PLATFORM_WIN32_KHR
+   const VkImportMemoryWin32HandleInfoKHR *import_win32_info =
+      vk_find_struct_const(pAllocateInfo->pNext, IMPORT_MEMORY_WIN32_HANDLE_INFO_KHR);
+#endif
    const VkMemoryDedicatedAllocateInfo *dedicate_info =
       vk_find_struct_const(pAllocateInfo->pNext, MEMORY_DEDICATED_ALLOCATE_INFO);
    const VkExportMemoryAllocateInfo *export_info =
@@ -196,6 +200,20 @@ radv_alloc_memory(struct radv_device *device, const VkMemoryAllocateInfo *pAlloc
             goto fail;
          }
       }
+#ifdef VK_USE_PLATFORM_WIN32_KHR
+   } else if (import_win32_info && import_win32_info->handleType) {
+      if (!import_win32_info->handle || import_win32_info->name) {
+         result = vk_error(device, VK_ERROR_INVALID_EXTERNAL_HANDLE);
+         goto fail;
+      }
+      result = radv_bo_from_win32_handle(device, import_win32_info->handle,
+                                         import_win32_info->handleType ==
+                                            VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_WIN32_BIT,
+                                         priority, mem);
+      if (result != VK_SUCCESS)
+         goto fail;
+      mem->import_handle_type = import_win32_info->handleType;
+#endif
    } else if (host_ptr_info) {
       assert(host_ptr_info->handleType == VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT);
       result = radv_bo_from_ptr(device, host_ptr_info->pHostPointer, pAllocateInfo->allocationSize, priority, mem);
@@ -224,6 +242,10 @@ radv_alloc_memory(struct radv_device *device, const VkMemoryAllocateInfo *pAlloc
           */
          if (domain == RADEON_DOMAIN_VRAM)
             flags |= RADEON_FLAG_GTT_WC;
+         if (export_info->handleTypes & VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_WIN32_KMT_BIT)
+            flags |= RADEON_FLAG_WIN32_KMT;
+         if (export_info->handleTypes & VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_WIN32_BIT)
+            flags |= RADEON_FLAG_WIN32_NT;
       } else if (!import_info && !(wsi_info && wsi_info->scanout)) {
          /* neither export nor import */
          flags |= RADEON_FLAG_NO_INTERPROCESS_SHARING | RADEON_FLAG_PREFER_LOCAL_BO;

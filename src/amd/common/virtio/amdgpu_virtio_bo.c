@@ -210,6 +210,14 @@ int amdvgpu_bo_export(amdvgpu_device_handle dev, amdvgpu_bo_handle bo,
                       enum amdgpu_bo_handle_type type,
                       uint32_t *shared_handle)
 {
+   if ((unsigned)type == AMDGPU_BO_HANDLE_TYPE_VIRTIO_WIN32_KMT ||
+       (unsigned)type == AMDGPU_BO_HANDLE_TYPE_VIRTIO_WIN32_NT) {
+      bo->host_blob->cacheable = false;
+      return vdrm_bo_export_win32(dev->vdev, bo->host_blob->handle,
+                                  (unsigned)type == AMDGPU_BO_HANDLE_TYPE_VIRTIO_WIN32_NT,
+                                  shared_handle);
+   }
+
    switch (type) {
    case amdgpu_bo_handle_type_kms:
       /* Return the resource id as this handle is only going to be used
@@ -299,6 +307,11 @@ int amdvgpu_bo_alloc(amdvgpu_device_handle dev,
       blob_flags |= VIRTGPU_BLOB_FLAG_USE_SHAREABLE;
       req.r.flags &= ~AMDGPU_GEM_CREATE_VIRTIO_SHARED;
    }
+   if (request->flags & AMDGPU_GEM_CREATE_VIRTIO_WIN32_KMT)
+      blob_flags |= VIRTGPU_BLOB_FLAG_USE_SHAREABLE | VDRM_BLOB_FLAG_WIN32_KMT;
+   if (request->flags & AMDGPU_GEM_CREATE_VIRTIO_WIN32_NT)
+      blob_flags |= VIRTGPU_BLOB_FLAG_USE_SHAREABLE | VDRM_BLOB_FLAG_WIN32_NT;
+   req.r.flags &= ~(AMDGPU_GEM_CREATE_VIRTIO_WIN32_KMT | AMDGPU_GEM_CREATE_VIRTIO_WIN32_NT);
 
    /* blob_id 0 is reserved for the shared memory buffer. */
    assert(req.blob_id > 0);
@@ -358,13 +371,22 @@ int amdvgpu_bo_va_op_raw(amdvgpu_device_handle dev,
 int amdvgpu_bo_import(amdvgpu_device_handle dev, enum amdgpu_bo_handle_type type,
                       uint32_t handle, struct amdvgpu_bo_import_result *result)
 {
-   if (type != amdgpu_bo_handle_type_dma_buf_fd)
+   const bool win32 = (unsigned)type == AMDGPU_BO_HANDLE_TYPE_VIRTIO_WIN32_KMT ||
+                      (unsigned)type == AMDGPU_BO_HANDLE_TYPE_VIRTIO_WIN32_NT;
+   if (type != amdgpu_bo_handle_type_dma_buf_fd && !win32)
       return -1;
 
    uint32_t kms_handle;
-   kms_handle = vdrm_dmabuf_to_handle(dev->vdev, handle);
+   uint64_t win32_size = 0;
+   if (win32) {
+      kms_handle = vdrm_win32_to_handle(dev->vdev, handle,
+                                        (unsigned)type == AMDGPU_BO_HANDLE_TYPE_VIRTIO_WIN32_NT,
+                                        &win32_size);
+   } else {
+      kms_handle = vdrm_dmabuf_to_handle(dev->vdev, handle);
+   }
    if (kms_handle == 0) {
-      mesa_loge("drmPrimeFDToHandle failed for dmabuf fd: %u\n", handle);
+      mesa_loge("importing %s %u failed\n", win32 ? "Win32 handle" : "dmabuf fd", handle);
       return -1;
    }
 
@@ -386,12 +408,16 @@ int amdvgpu_bo_import(amdvgpu_device_handle dev, enum amdgpu_bo_handle_type type
    if (res_id == 0)
       return -1;
 
-   off_t size = lseek(handle, 0, SEEK_END);
-   if (size == (off_t) -1) {
-      mesa_loge("lseek failed (%s)\n", strerror(errno));
-      return -1;
+   uint64_t size = win32_size;
+   if (!win32) {
+      off_t end = lseek(handle, 0, SEEK_END);
+      if (end == (off_t) -1) {
+         mesa_loge("lseek failed (%s)\n", strerror(errno));
+         return -1;
+      }
+      lseek(handle, 0, SEEK_CUR);
+      size = end;
    }
-   lseek(handle, 0, SEEK_CUR);
 
    bo = calloc(1, sizeof(struct amdvgpu_bo));
    bo->dev = dev;

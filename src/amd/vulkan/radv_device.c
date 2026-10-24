@@ -1862,6 +1862,42 @@ radv_GetMemoryFdKHR(VkDevice _device, const VkMemoryGetFdInfoKHR *pGetFdInfo, in
    return VK_SUCCESS;
 }
 
+#ifdef VK_USE_PLATFORM_WIN32_KHR
+VKAPI_ATTR VkResult VKAPI_CALL
+radv_GetMemoryWin32HandleKHR(VkDevice _device, const VkMemoryGetWin32HandleInfoKHR *pGetWin32HandleInfo,
+                             HANDLE *pHandle)
+{
+   VK_FROM_HANDLE(radv_device, device, _device);
+   VK_FROM_HANDLE(radv_device_memory, memory, pGetWin32HandleInfo->memory);
+
+   assert(pGetWin32HandleInfo->handleType == VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_WIN32_BIT ||
+          pGetWin32HandleInfo->handleType == VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_WIN32_KMT_BIT);
+
+   if (memory->image)
+      radv_image_bo_set_metadata(device, memory->image, memory->bo);
+
+   uint32_t handle;
+   if (!device->ws->buffer_get_win32_handle ||
+       !device->ws->buffer_get_win32_handle(device->ws, memory->bo,
+                                            pGetWin32HandleInfo->handleType ==
+                                               VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_WIN32_BIT,
+                                            &handle))
+      return vk_error(device, VK_ERROR_TOO_MANY_OBJECTS);
+   *pHandle = (HANDLE)(uintptr_t)handle;
+   return VK_SUCCESS;
+}
+
+VKAPI_ATTR VkResult VKAPI_CALL
+radv_GetMemoryWin32HandlePropertiesKHR(VkDevice _device, VkExternalMemoryHandleTypeFlagBits handleType,
+                                       HANDLE handle,
+                                       VkMemoryWin32HandlePropertiesKHR *pMemoryWin32HandleProperties)
+{
+   VK_FROM_HANDLE(radv_device, device, _device);
+
+   return vk_error(device, VK_ERROR_INVALID_EXTERNAL_HANDLE);
+}
+#endif
+
 static uint32_t
 radv_compute_valid_memory_types_attempt(struct radv_physical_device *pdev, enum radeon_bo_domain domains,
                                         enum radeon_bo_flag flags, enum radeon_bo_flag ignore_flags)

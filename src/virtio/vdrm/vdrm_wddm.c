@@ -29,6 +29,7 @@
 #include "util/simple_mtx.h"
 #include "util/u_dynarray.h"
 #include "util/u_idalloc.h"
+#include "util/u_atomic.h"
 #include "util/u_math.h"
 #include "util/u_sync_provider.h"
 
@@ -45,6 +46,8 @@ struct wddm_bo {
    uint32_t res_id;
    uint64_t size;
    void *map;
+   D3DKMT_HANDLE global_share;
+   bool shared_nt;
 };
 
 struct wddm_point {
@@ -77,6 +80,11 @@ struct wddm_kmt {
    PFND3DKMT_RENDER render;
    PFND3DKMT_CREATEALLOCATION createAllocation;
    PFND3DKMT_DESTROYALLOCATION destroyAllocation;
+   PFND3DKMT_SHAREOBJECTS shareObjects;
+   PFND3DKMT_QUERYRESOURCEINFO queryResourceInfo;
+   PFND3DKMT_OPENRESOURCE2 openResource2;
+   PFND3DKMT_QUERYRESOURCEINFOFROMNTHANDLE queryResourceInfoFromNtHandle;
+   PFND3DKMT_OPENRESOURCEFROMNTHANDLE openResourceFromNtHandle;
 };
 
 struct wddm_device {
@@ -137,6 +145,11 @@ load_kmt(struct wddm_kmt *k)
    LOAD(createAllocation, "D3DKMTCreateAllocation");
    LOAD(destroyAllocation, "D3DKMTDestroyAllocation");
 #undef LOAD
+   k->shareObjects = (void *)GetProcAddress(gdi, "D3DKMTShareObjects");
+   k->queryResourceInfo = (void *)GetProcAddress(gdi, "D3DKMTQueryResourceInfo");
+   k->openResource2 = (void *)GetProcAddress(gdi, "D3DKMTOpenResource2");
+   k->queryResourceInfoFromNtHandle = (void *)GetProcAddress(gdi, "D3DKMTQueryResourceInfoFromNtHandle");
+   k->openResourceFromNtHandle = (void *)GetProcAddress(gdi, "D3DKMTOpenResourceFromNtHandle");
    return true;
 }
 
@@ -825,48 +838,18 @@ wddm_handle_to_res_id(struct vdrm_device *vdev, uint32_t handle)
    return res_id;
 }
 
+/* The KMD issues RESOURCE_CREATE_BLOB asynchronously. RES_INFO reports
+ * IsCreated once it is queued, and maps mappable blobs synchronously.
+ */
 static bool
-create_blob(struct wddm_device *wd, size_t size, uint32_t blob_flags, uint64_t blob_id,
-            struct wddm_bo *bo)
+query_blob(struct wddm_device *wd, struct wddm_bo *bo)
 {
-   memset(bo, 0, sizeof(*bo));
-   bo->size = align64(size, 4096);
-   VIOGPU_CREATE_ALLOCATION_EXCHANGE priv = {
-      .Type = VIOGPU_RESOURCE_TYPE_BLOB,
-      .OptionsBlob =
-         {
-            .blob_mem = VIOGPU_BLOB_MEM_HOST3D,
-            .blob_flags = blob_flags & (VIOGPU_BLOB_FLAG_USE_MAPPABLE | VIOGPU_BLOB_FLAG_USE_SHAREABLE),
-            .blob_id = blob_id,
-         },
-      .Size = bo->size,
-   };
-   VIOGPU_CREATE_RESOURCE_EXCHANGE res_priv = {0};
-   D3DDDI_ALLOCATIONINFO ai = {.pPrivateDriverData = &priv, .PrivateDriverDataSize = sizeof(priv)};
-   D3DKMT_CREATEALLOCATION ca = {
-      .hDevice = wd->device,
-      .pPrivateDriverData = &res_priv,
-      .PrivateDriverDataSize = sizeof(res_priv),
-      .NumAllocations = 1,
-      .pAllocationInfo = &ai,
-      .Flags = {.CreateResource = 1},
-   };
-   NTSTATUS st = wd->kmt.createAllocation(&ca);
-   if (!NT_SUCCESS(st)) {
-      mesa_loge("vdrm_wddm: CreateAllocation(blob %" PRIu64 ") failed: 0x%lx", blob_id, st);
-      return false;
-   }
-   bo->alloc = ai.hAllocation;
-   bo->resource = ca.hResource;
-
    VIOGPU_ESCAPE esc = {
       .Type = VIOGPU_RES_INFO,
       .DataLength = sizeof(VIOGPU_RES_INFO_REQ),
       .ResourceInfo = {.ResHandle = bo->alloc},
    };
-   /* The KMD issues RESOURCE_CREATE_BLOB asynchronously. RES_INFO reports
-    * IsCreated once it is queued, and maps mappable blobs synchronously.
-    */
+   NTSTATUS st;
    const int64_t deadline = os_time_get_nano() + 2000000000ll;
    for (unsigned tries = 0;; tries++) {
       st = wddm_escape(wd, &esc, true);
@@ -877,13 +860,91 @@ create_blob(struct wddm_device *wd, size_t size, uint32_t blob_flags, uint64_t b
    if (!NT_SUCCESS(st) || !esc.ResourceInfo.IsBlob || !esc.ResourceInfo.IsCreated) {
       mesa_loge("vdrm_wddm: RES_INFO failed: 0x%lx (blob %d, created %d)", st,
                 esc.ResourceInfo.IsBlob, esc.ResourceInfo.IsCreated);
-      D3DKMT_DESTROYALLOCATION d = {.hDevice = wd->device, .hResource = bo->resource};
-      (void)wd->kmt.destroyAllocation(&d);
       return false;
    }
    bo->res_id = esc.ResourceInfo.Id;
    bo->map = (void *)(uintptr_t)esc.ResourceInfo.UserVa;
    return true;
+}
+
+/* Names a shared blob for the KMD, which resolves opens from other devices
+ * and processes by it (VIOGPU_CREATE_ALLOCATION_EXCHANGE_EX). Bit 61 is set.
+ * Bits 62 and 63 are reserved for the KMD's own cookies.
+ */
+static uint64_t
+share_cookie(void)
+{
+   static uint32_t next;
+   return (1ull << 61) | ((uint64_t)(GetCurrentProcessId() & 0x1fffffff) << 32) |
+          p_atomic_inc_return(&next);
+}
+
+static bool
+create_blob(struct wddm_device *wd, size_t size, uint32_t blob_flags, uint64_t blob_id,
+            struct wddm_bo *bo)
+{
+   memset(bo, 0, sizeof(*bo));
+   bo->size = align64(size, 4096);
+   const bool shared = blob_flags & (VDRM_BLOB_FLAG_WIN32_KMT | VDRM_BLOB_FLAG_WIN32_NT);
+   VIOGPU_CREATE_ALLOCATION_EXCHANGE_EX priv = {
+      .Base =
+         {
+            .Type = VIOGPU_RESOURCE_TYPE_BLOB,
+            .OptionsBlob =
+               {
+                  .blob_mem = VIOGPU_BLOB_MEM_HOST3D,
+                  .blob_flags = blob_flags & (VIOGPU_BLOB_FLAG_USE_MAPPABLE | VIOGPU_BLOB_FLAG_USE_SHAREABLE),
+                  .blob_id = blob_id,
+               },
+            .Size = bo->size,
+         },
+      .LookupCookie = shared ? share_cookie() : 0,
+   };
+   VIOGPU_CREATE_RESOURCE_EXCHANGE res_priv = {0};
+   D3DDDI_ALLOCATIONINFO ai = {
+      .pPrivateDriverData = &priv,
+      .PrivateDriverDataSize = shared ? sizeof(priv) : sizeof(priv.Base),
+   };
+   D3DKMT_CREATEALLOCATION ca = {
+      .hDevice = wd->device,
+      .pPrivateDriverData = &res_priv,
+      .PrivateDriverDataSize = sizeof(res_priv),
+      .NumAllocations = 1,
+      .pAllocationInfo = &ai,
+      .Flags =
+         {
+            .CreateResource = 1,
+            .CreateShared = shared,
+            .NtSecuritySharing = !!(blob_flags & VDRM_BLOB_FLAG_WIN32_NT),
+         },
+   };
+   NTSTATUS st = wd->kmt.createAllocation(&ca);
+   if (!NT_SUCCESS(st)) {
+      mesa_loge("vdrm_wddm: CreateAllocation(blob %" PRIu64 ") failed: 0x%lx", blob_id, st);
+      return false;
+   }
+   bo->alloc = ai.hAllocation;
+   bo->resource = ca.hResource;
+   bo->global_share = ca.hGlobalShare;
+   bo->shared_nt = !!(blob_flags & VDRM_BLOB_FLAG_WIN32_NT);
+
+   if (!query_blob(wd, bo)) {
+      D3DKMT_DESTROYALLOCATION d = {.hDevice = wd->device, .hResource = bo->resource};
+      (void)wd->kmt.destroyAllocation(&d);
+      return false;
+   }
+   return true;
+}
+
+static uint32_t
+insert_bo(struct wddm_device *wd, const struct wddm_bo *bo)
+{
+   simple_mtx_assert_locked(&wd->bo_lock);
+   uint32_t idx = util_idalloc_alloc(&wd->bo_ids);
+   if (idx >= util_dynarray_num_elements(&wd->bos, struct wddm_bo))
+      util_dynarray_resize(&wd->bos, struct wddm_bo, idx + 1);
+   *util_dynarray_element(&wd->bos, struct wddm_bo, idx) = *bo;
+   return idx + 1;
 }
 
 static uint32_t
@@ -909,12 +970,159 @@ wddm_bo_create(struct vdrm_device *vdev, size_t size, uint32_t blob_flags, uint6
       return 0;
 
    simple_mtx_lock(&wd->bo_lock);
-   uint32_t idx = util_idalloc_alloc(&wd->bo_ids);
-   if (idx >= util_dynarray_num_elements(&wd->bos, struct wddm_bo))
-      util_dynarray_resize(&wd->bos, struct wddm_bo, idx + 1);
-   *util_dynarray_element(&wd->bos, struct wddm_bo, idx) = bo;
+   uint32_t handle = insert_bo(wd, &bo);
    simple_mtx_unlock(&wd->bo_lock);
-   return idx + 1;
+   return handle;
+}
+
+static int
+wddm_bo_export_win32(struct vdrm_device *vdev, uint32_t handle, bool nt, uint32_t *win32_handle)
+{
+   struct wddm_device *wd = to_wddm_device(vdev);
+   simple_mtx_lock(&wd->bo_lock);
+   struct wddm_bo *bo = bo_lookup(wd, handle);
+   const bool shared = bo && (nt ? bo->shared_nt : bo->global_share != 0);
+   const D3DKMT_HANDLE resource = bo ? bo->resource : 0;
+   const D3DKMT_HANDLE global_share = bo ? bo->global_share : 0;
+   simple_mtx_unlock(&wd->bo_lock);
+   if (!shared)
+      return -EINVAL;
+
+   if (!nt) {
+      *win32_handle = global_share;
+      return 0;
+   }
+   if (!wd->kmt.shareObjects)
+      return -ENOSYS;
+   HANDLE h = NULL;
+   NTSTATUS st = wd->kmt.shareObjects(1, &resource, NULL, 0x80000001, &h);
+   if (!NT_SUCCESS(st)) {
+      mesa_loge("vdrm_wddm: ShareObjects failed: 0x%lx", st);
+      return -EINVAL;
+   }
+   *win32_handle = (uint32_t)(uintptr_t)h;
+   return 0;
+}
+
+static bool
+open_shared(struct wddm_device *wd, uint32_t win32_handle, bool nt, struct wddm_bo *bo)
+{
+   UINT total = 0, resource_size = 0, runtime = 0, count = 0;
+   NTSTATUS st;
+   if (nt) {
+      if (!wd->kmt.queryResourceInfoFromNtHandle || !wd->kmt.openResourceFromNtHandle)
+         return false;
+      D3DKMT_QUERYRESOURCEINFOFROMNTHANDLE q = {
+         .hDevice = wd->device,
+         .hNtHandle = (HANDLE)(uintptr_t)win32_handle,
+      };
+      st = wd->kmt.queryResourceInfoFromNtHandle(&q);
+      total = q.TotalPrivateDriverDataSize;
+      resource_size = q.ResourcePrivateDriverDataSize;
+      runtime = q.PrivateRuntimeDataSize;
+      count = q.NumAllocations;
+   } else {
+      if (!wd->kmt.queryResourceInfo || !wd->kmt.openResource2)
+         return false;
+      D3DKMT_QUERYRESOURCEINFO q = {.hDevice = wd->device, .hGlobalShare = win32_handle};
+      st = wd->kmt.queryResourceInfo(&q);
+      total = q.TotalPrivateDriverDataSize;
+      resource_size = q.ResourcePrivateDriverDataSize;
+      runtime = q.PrivateRuntimeDataSize;
+      count = q.NumAllocations;
+   }
+   if (!NT_SUCCESS(st) || count != 1) {
+      mesa_loge("vdrm_wddm: not a shared blob (0x%lx, %u allocations)", st, count);
+      return false;
+   }
+
+   void *mem = calloc(1, total + resource_size + runtime);
+   if (!mem)
+      return false;
+   uint8_t *total_buf = mem, *resource_buf = total_buf + total, *runtime_buf = resource_buf + resource_size;
+   D3DDDI_OPENALLOCATIONINFO2 ai = {0};
+   D3DKMT_HANDLE resource = 0;
+   if (nt) {
+      D3DKMT_OPENRESOURCEFROMNTHANDLE o = {
+         .hDevice = wd->device,
+         .hNtHandle = (HANDLE)(uintptr_t)win32_handle,
+         .NumAllocations = 1,
+         .pOpenAllocationInfo2 = &ai,
+         .PrivateRuntimeDataSize = runtime,
+         .pPrivateRuntimeData = runtime_buf,
+         .ResourcePrivateDriverDataSize = resource_size,
+         .pResourcePrivateDriverData = resource_buf,
+         .TotalPrivateDriverDataBufferSize = total,
+         .pTotalPrivateDriverDataBuffer = total_buf,
+      };
+      st = wd->kmt.openResourceFromNtHandle(&o);
+      resource = o.hResource;
+   } else {
+      D3DKMT_OPENRESOURCE o = {
+         .hDevice = wd->device,
+         .hGlobalShare = win32_handle,
+         .NumAllocations = 1,
+         .pOpenAllocationInfo2 = &ai,
+         .pPrivateRuntimeData = runtime_buf,
+         .PrivateRuntimeDataSize = runtime,
+         .pResourcePrivateDriverData = resource_buf,
+         .ResourcePrivateDriverDataSize = resource_size,
+         .pTotalPrivateDriverDataBuffer = total_buf,
+         .TotalPrivateDriverDataBufferSize = total,
+      };
+      st = wd->kmt.openResource2(&o);
+      resource = o.hResource;
+   }
+   if (!NT_SUCCESS(st)) {
+      mesa_loge("vdrm_wddm: opening a shared blob failed: 0x%lx", st);
+      free(mem);
+      return false;
+   }
+
+   const VIOGPU_CREATE_ALLOCATION_EXCHANGE *x =
+      ai.pPrivateDriverData && ai.PrivateDriverDataSize >= sizeof(*x) ? ai.pPrivateDriverData
+      : total >= sizeof(*x)                                             ? (const void *)total_buf
+                                                                        : NULL;
+   memset(bo, 0, sizeof(*bo));
+   bo->alloc = ai.hAllocation;
+   bo->resource = resource;
+   bo->size = x && x->Type == VIOGPU_RESOURCE_TYPE_BLOB ? x->Size : 0;
+   free(mem);
+   if (!bo->size || !query_blob(wd, bo)) {
+      D3DKMT_DESTROYALLOCATION d = {.hDevice = wd->device, .hResource = resource};
+      (void)wd->kmt.destroyAllocation(&d);
+      return false;
+   }
+   return true;
+}
+
+static uint32_t
+wddm_win32_to_handle(struct vdrm_device *vdev, uint32_t win32_handle, bool nt, uint64_t *size)
+{
+   struct wddm_device *wd = to_wddm_device(vdev);
+   struct wddm_bo bo;
+   if (!open_shared(wd, win32_handle, nt, &bo))
+      return 0;
+
+   simple_mtx_lock(&wd->bo_lock);
+   uint32_t handle = 0;
+   util_dynarray_foreach (&wd->bos, struct wddm_bo, b) {
+      if (b->alloc && b->res_id == bo.res_id) {
+         handle = b - (struct wddm_bo *)util_dynarray_begin(&wd->bos) + 1;
+         break;
+      }
+   }
+   const bool known = handle != 0;
+   if (!known)
+      handle = insert_bo(wd, &bo);
+   *size = known ? bo_lookup(wd, handle)->size : bo.size;
+   simple_mtx_unlock(&wd->bo_lock);
+
+   if (known) {
+      D3DKMT_DESTROYALLOCATION d = {.hDevice = wd->device, .hResource = bo.resource};
+      (void)wd->kmt.destroyAllocation(&d);
+   }
+   return handle;
 }
 
 static int
@@ -1075,6 +1283,8 @@ static const struct vdrm_device_funcs funcs = {
    .bo_export_dmabuf = wddm_bo_export_dmabuf,
    .bo_close = wddm_bo_close,
    .bo_scanout = wddm_bo_scanout,
+   .bo_export_win32 = wddm_bo_export_win32,
+   .win32_to_handle = wddm_win32_to_handle,
    .close = wddm_close,
 };
 

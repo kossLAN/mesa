@@ -349,6 +349,30 @@ radv_bo_from_fd(struct radv_device *device, int fd, unsigned priority, struct ra
    return result;
 }
 
+#ifdef VK_USE_PLATFORM_WIN32_KHR
+VkResult
+radv_bo_from_win32_handle(struct radv_device *device, HANDLE handle, bool nt, unsigned priority,
+                          struct radv_device_memory *mem)
+{
+   struct radv_physical_device *pdev = radv_device_physical(device);
+   struct radv_instance *instance = radv_physical_device_instance(pdev);
+   struct radeon_winsys *ws = device->ws;
+   VkResult result;
+
+   if (!ws->buffer_from_win32_handle)
+      return VK_ERROR_INVALID_EXTERNAL_HANDLE;
+   /* Win32 handles are 32-bit significant. */
+   result = ws->buffer_from_win32_handle(ws, (uint32_t)(uintptr_t)handle, nt, priority, &mem->bo, NULL);
+   if (result != VK_SUCCESS)
+      return result;
+
+   vk_address_binding_report(&instance->vk, &mem->base, radv_buffer_get_va(mem->bo), mem->bo->size,
+                             VK_DEVICE_ADDRESS_BINDING_TYPE_BIND_EXT);
+
+   return result;
+}
+#endif
+
 VkResult
 radv_bo_from_ptr(struct radv_device *device, void *host_ptr, uint64_t alloc_size, unsigned priority,
                  struct radv_device_memory *mem)

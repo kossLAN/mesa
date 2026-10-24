@@ -731,6 +731,9 @@ radv_physical_device_get_supported_extensions(const struct radv_physical_device 
       .KHR_external_fence_fd = RADV_FD_EXTERNAL_HANDLES,
       .KHR_external_memory = true,
       .KHR_external_memory_fd = RADV_FD_EXTERNAL_HANDLES,
+#ifdef VK_USE_PLATFORM_WIN32_KHR
+      .KHR_external_memory_win32 = RADV_WIN32_EXTERNAL_HANDLES,
+#endif
       .KHR_external_semaphore = true,
       .KHR_external_semaphore_fd = RADV_FD_EXTERNAL_HANDLES,
       .KHR_format_feature_flags2 = true,
