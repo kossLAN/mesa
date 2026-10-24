@@ -376,12 +376,9 @@ can_wait_many(struct vk_device *device,
        !(waits[0].sync->type->features & VK_SYNC_FEATURE_WAIT_ANY))
       return false;
 
-   /* If we only have one sync type, there's no need to check everything */
-   if (device->physical->supported_sync_types[1] == NULL) {
-      assert(waits[0].sync->type == device->physical->supported_sync_types[0]);
-      return true;
-   }
-
+   /* Waits can carry vk_sync_dummy_type, which is never in
+    * supported_sync_types.
+    */
    for (uint32_t i = 0; i < wait_count; i++) {
       assert_valid_wait(waits[i].sync, waits[i].wait_value, wait_flags);
       if (waits[i].sync->type != waits[0].sync->type)
