@@ -3082,10 +3082,8 @@ static uint32_t
 wsi_select_host_memory_type(const struct wsi_device *wsi,
                             uint32_t type_bits)
 {
-   VkMemoryPropertyFlags req_props = VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
-
-   if (wsi->sw)
-      req_props |= VK_MEMORY_PROPERTY_HOST_CACHED_BIT;
+   VkMemoryPropertyFlags req_props =
+      VK_MEMORY_PROPERTY_HOST_COHERENT_BIT | VK_MEMORY_PROPERTY_HOST_CACHED_BIT;
 
    return wsi_select_memory_type(wsi, req_props, 0 /* deny_props */, type_bits);
 }
