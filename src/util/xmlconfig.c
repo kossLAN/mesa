@@ -58,6 +58,13 @@ static inline void regfree(regex_t* r) {}
 #include <fcntl.h>
 #include <math.h>
 #include "strndup.h"
+
+/* Windows executable names are case-insensitive. */
+#ifdef _WIN32
+#define exec_name_cmp _stricmp
+#else
+#define exec_name_cmp strcmp
+#endif
 #include "u_process.h"
 #include "os_file.h"
 #include "os_misc.h"
@@ -770,7 +777,7 @@ parseAppAttr(struct OptConfData *data, const char **attr)
          application_versions = attr[i+1];
       else XML_WARNING("unknown application attribute: %s.", attr[i]);
    }
-   if (exec && strcmp(exec, data->execName)) {
+   if (exec && exec_name_cmp(exec, data->execName)) {
       data->ignoringApp = data->inApp;
    } else if (exec_regexp) {
       regex_t re;
