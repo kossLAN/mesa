@@ -764,10 +764,12 @@ radv_physical_device_get_supported_extensions(const struct radv_physical_device 
       .KHR_pipeline_binary = true,
       .KHR_pipeline_executable_properties = true,
       .KHR_pipeline_library = true,
-#ifdef RADV_USE_WSI_PRESENT_FEEDBACK
+#ifdef RADV_USE_WSI_PLATFORM
       .KHR_present_id = true,
-      .KHR_present_id2 = true,
       .KHR_present_wait = pdev->info.has_timeline_syncobj,
+#endif
+#ifdef RADV_USE_WSI_PRESENT_FEEDBACK
+      .KHR_present_id2 = true,
       .KHR_present_wait2 = true,
 #endif
       .KHR_push_descriptor = true,

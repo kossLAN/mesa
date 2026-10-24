@@ -73,6 +73,7 @@ struct wsi_win32_image {
    struct wsi_image base;
    enum wsi_win32_image_state state;
    uint64_t present_seq;
+   uint64_t present_id;
    struct wsi_win32_swapchain *chain;
    struct {
       ID3D12Resource *swapchain_res;
@@ -127,6 +128,7 @@ struct wsi_win32_swapchain {
       uint64_t seq;
       struct wsi_win32_image *busy;
       struct wsi_win32_image *shown;
+      uint64_t completed_id;
    } present;
 
    struct wsi_win32_image     images[0];
@@ -910,6 +912,8 @@ wsi_win32_present_thread(void *data)
       if (result != VK_SUCCESS)
          chain->status = result;
       chain->present.busy = NULL;
+      if (result == VK_SUCCESS && image->present_id > chain->present.completed_id)
+         chain->present.completed_id = image->present_id;
       if (chain->scanout && result == VK_SUCCESS) {
          if (chain->present.shown)
             chain->present.shown->state = WSI_IMAGE_IDLE;
@@ -950,11 +954,42 @@ wsi_win32_queue_present(struct wsi_swapchain *drv_chain,
    }
    image->state = WSI_IMAGE_QUEUED;
    image->present_seq = ++chain->present.seq;
+   image->present_id = present_id;
    u_cnd_monotonic_broadcast(&chain->present.cond);
    VkResult status = chain->status;
    mtx_unlock(&chain->acquire_mutex);
 
    return status;
+}
+
+static VkResult
+wsi_win32_wait_for_present(struct wsi_swapchain *drv_chain, uint64_t present_id, uint64_t timeout)
+{
+   struct wsi_win32_swapchain *chain = (struct wsi_win32_swapchain *)drv_chain;
+
+   if (chain->dxgi)
+      return wsi_swapchain_wait_for_present_semaphore(drv_chain, present_id, timeout);
+
+   const uint64_t abs_timeout = os_time_get_absolute_timeout(timeout);
+   struct timespec abs_timespec;
+   timespec_from_nsec(&abs_timespec, abs_timeout);
+
+   VkResult result = VK_SUCCESS;
+   mtx_lock(&chain->acquire_mutex);
+   while (chain->present.completed_id < present_id && chain->status == VK_SUCCESS) {
+      int ret = u_cnd_monotonic_timedwait(&chain->acquire_cond, &chain->acquire_mutex, &abs_timespec);
+      if (ret == thrd_timedout) {
+         result = VK_TIMEOUT;
+         break;
+      } else if (ret != thrd_success) {
+         result = VK_ERROR_OUT_OF_DATE_KHR;
+         break;
+      }
+   }
+   if (result == VK_SUCCESS && chain->status != VK_SUCCESS)
+      result = chain->status;
+   mtx_unlock(&chain->acquire_mutex);
+   return result;
 }
 
 static VkResult
@@ -1143,6 +1178,7 @@ wsi_win32_surface_create_swapchain(
    chain->base.acquire_next_image = wsi_win32_acquire_next_image;
    chain->base.release_images = wsi_win32_release_images;
    chain->base.queue_present = wsi_win32_queue_present;
+   chain->base.wait_for_present = wsi_win32_wait_for_present;
    chain->base.present_mode = wsi_swapchain_get_present_mode(wsi_device, create_info);
    chain->extent = create_info->imageExtent;
    chain->format = create_info->imageFormat;
