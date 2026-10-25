@@ -42,6 +42,9 @@
 #include <dxguids/dxguids.h>
 
 #include <dcomp.h>
+/* NTSTATUS, which d3dkmthk.h needs. */
+#include <winternl.h>
+#include <d3dkmthk.h>
 
 #if defined(__GNUC__)
 #pragma GCC diagnostic ignored "-Wint-to-pointer-cast"      // warning: cast to pointer from integer of different size
@@ -1066,8 +1069,46 @@ wsi_win32_surface_create_swapchain_dxgi(
    return VK_SUCCESS;
 }
 
+/* Whether the monitor showing the window belongs to a GPU that renders. */
+static bool
+wsi_win32_monitor_renders(HMONITOR monitor)
+{
+   HMODULE gdi = GetModuleHandleW(L"gdi32.dll");
+   PFND3DKMT_OPENADAPTERFROMHDC open_adapter =
+      gdi ? (PFND3DKMT_OPENADAPTERFROMHDC)(void *)GetProcAddress(gdi, "D3DKMTOpenAdapterFromHdc") : NULL;
+   PFND3DKMT_QUERYADAPTERINFO query =
+      gdi ? (PFND3DKMT_QUERYADAPTERINFO)(void *)GetProcAddress(gdi, "D3DKMTQueryAdapterInfo") : NULL;
+   PFND3DKMT_CLOSEADAPTER close_adapter =
+      gdi ? (PFND3DKMT_CLOSEADAPTER)(void *)GetProcAddress(gdi, "D3DKMTCloseAdapter") : NULL;
+   MONITORINFOEXW info = {};
+   info.cbSize = sizeof(info);
+   if (!open_adapter || !query || !close_adapter || !GetMonitorInfoW(monitor, &info))
+      return false;
+   HDC dc = CreateDCW(info.szDevice, info.szDevice, NULL, NULL);
+   if (!dc)
+      return false;
+   D3DKMT_OPENADAPTERFROMHDC open = {};
+   open.hDc = dc;
+   const bool opened = open_adapter(&open) >= 0;
+   DeleteDC(dc);
+   if (!opened)
+      return false;
+   D3DKMT_ADAPTERTYPE type = {};
+   D3DKMT_QUERYADAPTERINFO q = {};
+   q.hAdapter = open.hAdapter;
+   q.Type = KMTQAITYPE_ADAPTERTYPE;
+   q.pPrivateDriverData = &type;
+   q.PrivateDriverDataSize = sizeof(type);
+   const bool renders = query(&q) >= 0 && type.RenderSupported;
+   D3DKMT_CLOSEADAPTER close = {};
+   close.hAdapter = open.hAdapter;
+   (void)close_adapter(&close);
+   return renders;
+}
+
 /* MESA_VK_WSI_WIN32_SCANOUT=auto (default) scans out swapchains of windows
- * that cover their whole monitor, i.e. fullscreen ones. "always" and "never"
+ * that cover their whole monitor, i.e. fullscreen ones, unless DWM composes
+ * that monitor on a GPU (wsi_win32_monitor_renders). "always" and "never"
  * force the choice.
  */
 static bool
@@ -1086,8 +1127,9 @@ wsi_win32_wants_scanout(const struct wsi_device *wsi_device, HWND hwnd)
    monitor.cbSize = sizeof(monitor);
    RECT client;
    POINT origin = {0, 0};
+   HMONITOR hmonitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
    if (!GetClientRect(hwnd, &client) || !ClientToScreen(hwnd, &origin) ||
-       !GetMonitorInfoW(MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST), &monitor))
+       !GetMonitorInfoW(hmonitor, &monitor) || wsi_win32_monitor_renders(hmonitor))
       return false;
    return origin.x == monitor.rcMonitor.left && origin.y == monitor.rcMonitor.top &&
           client.right == monitor.rcMonitor.right - monitor.rcMonitor.left &&
