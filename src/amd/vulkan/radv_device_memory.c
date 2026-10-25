@@ -246,6 +246,9 @@ radv_alloc_memory(struct radv_device *device, const VkMemoryAllocateInfo *pAlloc
             flags |= RADEON_FLAG_WIN32_KMT;
          if (export_info->handleTypes & VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_WIN32_BIT)
             flags |= RADEON_FLAG_WIN32_NT;
+         if (export_info->handleTypes & (VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_WIN32_KMT_BIT |
+                                         VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_WIN32_BIT))
+            flags |= RADEON_FLAG_IMPLICIT_SYNC;
       } else if (!import_info && !(wsi_info && wsi_info->scanout)) {
          /* neither export nor import */
          flags |= RADEON_FLAG_NO_INTERPROCESS_SHARING | RADEON_FLAG_PREFER_LOCAL_BO;
