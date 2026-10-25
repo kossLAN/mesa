@@ -875,6 +875,11 @@ static uint64_t
 share_cookie(void)
 {
    static uint32_t next;
+   if (!p_atomic_read(&next)) {
+      LARGE_INTEGER now;
+      QueryPerformanceCounter(&now);
+      p_atomic_cmpxchg(&next, 0, now.LowPart | 1);
+   }
    return (1ull << 61) | ((uint64_t)(GetCurrentProcessId() & 0x1fffffff) << 32) |
           p_atomic_inc_return(&next);
 }
