@@ -1865,6 +1865,9 @@ dep_m = cc.find_library('m', required : false)
 if host_machine.system() == 'windows'
   dep_regex = meson.get_compiler('c').find_library('regex', required : false)
   if not dep_regex.found()
+    dep_regex = dependency('tre', required : false, allow_fallback : true)
+  endif
+  if not dep_regex.found()
     dep_regex = declare_dependency(compile_args : ['-DNO_REGEX'])
   endif
 else
