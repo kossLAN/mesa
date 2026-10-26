@@ -4,6 +4,10 @@
 inc_include = [include_directories('.')]
 inc_winddk = include_directories('winddk')
 
+if host_machine.system() == 'windows' and cc.get_argument_syntax() == 'gcc'
+  inc_include += [include_directories('mingw')]
+endif
+
 # Most things assume that Android headers are in the default include
 # path when compiling for Android so add the stub headers to
 # inc_include when using the stub.
