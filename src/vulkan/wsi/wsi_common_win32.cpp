@@ -116,7 +116,6 @@ struct wsi_win32_swapchain {
    VkExtent2D                 extent;
    VkFormat                   format;
    HWND wnd;
-   HDC chain_dc;
 
    bool scanout;
 
@@ -584,8 +583,7 @@ wsi_win32_image_init(VkDevice device_h,
    if (chain->dxgi || chain->scanout)
       return VK_SUCCESS;
 
-   chain->chain_dc = GetDC(chain->wnd);
-   image->sw.dc = CreateCompatibleDC(chain->chain_dc);
+   image->sw.dc = CreateCompatibleDC(NULL);
    HBITMAP bmp = NULL;
 
    BITMAPINFO info = { 0 };
@@ -646,9 +644,6 @@ wsi_win32_swapchain_destroy(struct wsi_swapchain *drv_chain,
 
    for (uint32_t i = 0; i < chain->base.image_count; i++)
       wsi_win32_image_finish(chain, allocator, &chain->images[i]);
-
-   if (chain->chain_dc)
-      DeleteDC(chain->chain_dc);
 
    if (chain->surface->current_swapchain == chain)
       chain->surface->current_swapchain = NULL;
@@ -855,9 +850,13 @@ wsi_win32_copy_to_window(struct wsi_win32_swapchain *chain, struct wsi_win32_ima
       dptr += image->sw.bmp_row_pitch;
       ptr += image->base.row_pitches[0];
    }
-   if (!StretchBlt(chain->chain_dc, 0, 0, chain->extent.width, chain->extent.height, image->sw.dc, 0, 0, chain->extent.width, chain->extent.height, SRCCOPY))
-      return VK_ERROR_MEMORY_MAP_FAILED;
-   return VK_SUCCESS;
+   HDC dc = GetDCEx(chain->wnd, NULL, DCX_CACHE | DCX_CLIPSIBLINGS | DCX_CLIPCHILDREN);
+   if (!dc)
+      return VK_ERROR_SURFACE_LOST_KHR;
+   const BOOL blitted = StretchBlt(dc, 0, 0, chain->extent.width, chain->extent.height, image->sw.dc, 0, 0,
+                                   chain->extent.width, chain->extent.height, SRCCOPY);
+   ReleaseDC(chain->wnd, dc);
+   return blitted ? VK_SUCCESS : VK_ERROR_MEMORY_MAP_FAILED;
 }
 
 static VkResult
