@@ -1467,6 +1467,7 @@ ac_query_gpu_info(int fd, void *dev_p, struct radeon_info *info,
 
    assert(info->drm_major == 3);
    info->is_amdgpu = true;
+   info->has_luid = ac_drm_device_get_luid(dev, info->luid);
 
    if (info->drm_minor < 54) {
       fprintf(stderr, "amdgpu: DRM version is %u.%u.%u, but this driver is "

@@ -107,6 +107,15 @@ int ac_drm_device_get_fd(ac_drm_device *device_handle)
    return device_handle->fd;
 }
 
+bool ac_drm_device_get_luid(ac_drm_device *dev, uint8_t luid[8])
+{
+#ifdef HAVE_AMDGPU_VIRTIO
+   if (dev->is_virtio)
+      return amdvgpu_device_get_luid(dev->vdev, luid);
+#endif
+   return false;
+}
+
 int ac_drm_bo_set_metadata(ac_drm_device *dev, uint32_t bo_handle, struct amdgpu_bo_metadata *info)
 {
 #ifdef HAVE_AMDGPU_VIRTIO

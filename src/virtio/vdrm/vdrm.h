@@ -56,6 +56,7 @@ struct vdrm_device_funcs {
                           uint32_t *win32_handle);
    uint32_t (*win32_to_handle)(struct vdrm_device *vdev, uint32_t win32_handle, bool nt,
                                uint64_t *size);
+   bool (*get_luid)(struct vdrm_device *vdev, uint8_t luid[8]);
 
    void (*close)(struct vdrm_device *vdev);
 };
@@ -199,6 +200,12 @@ vdrm_win32_to_handle(struct vdrm_device *vdev, uint32_t win32_handle, bool nt, u
    if (!vdev->funcs->win32_to_handle)
       return 0;
    return vdev->funcs->win32_to_handle(vdev, win32_handle, nt, size);
+}
+
+static inline bool
+vdrm_get_luid(struct vdrm_device *vdev, uint8_t luid[8])
+{
+   return vdev->funcs->get_luid && vdev->funcs->get_luid(vdev, luid);
 }
 
 /*

@@ -215,3 +215,8 @@ init_sync_provider:
 
    return 0;
 }
+
+bool amdvgpu_device_get_luid(amdvgpu_device_handle dev, uint8_t luid[8])
+{
+   return vdrm_get_luid(dev->vdev, luid);
+}

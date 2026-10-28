@@ -370,6 +370,8 @@ struct radeon_info {
    uint32_t max_submitted_ibs[AMD_NUM_IP_TYPES];
    bool is_amdgpu;
    bool is_virtio;
+   bool has_luid;
+   uint8_t luid[8];
    bool has_userptr;
    bool has_syncobj;
    bool has_timeline_syncobj;

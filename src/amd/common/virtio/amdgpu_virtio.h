@@ -23,6 +23,7 @@ int amdvgpu_device_initialize(int fd, uint32_t *drm_major, uint32_t *drm_minor,
                               amdvgpu_device_handle* dev,
                               struct util_sync_provider **p);
 int amdvgpu_device_deinitialize(amdvgpu_device_handle dev);
+bool amdvgpu_device_get_luid(amdvgpu_device_handle dev, uint8_t luid[8]);
 int amdvgpu_bo_va_op_raw(amdvgpu_device_handle dev,
                          uint32_t res_id,
                          uint64_t offset,

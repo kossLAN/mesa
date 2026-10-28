@@ -1940,8 +1940,8 @@ radv_get_physical_device_properties(struct radv_physical_device *pdev)
 
       /* Vulkan 1.1 */
       .driverID = VK_DRIVER_ID_MESA_RADV,
-      .deviceLUIDValid = false, /* The LUID is for Windows. */
-      .deviceNodeMask = 0,
+      .deviceLUIDValid = pdev->info.has_luid,
+      .deviceNodeMask = pdev->info.has_luid,
       .subgroupSize = RADV_SUBGROUP_SIZE,
       .subgroupSupportedStages =
          VK_SHADER_STAGE_ALL_GRAPHICS | VK_SHADER_STAGE_COMPUTE_BIT | taskmesh_stages | rt_stages,
@@ -2427,7 +2427,7 @@ radv_get_physical_device_properties(struct radv_physical_device *pdev)
 
    memcpy(p->deviceUUID, pdev->device_uuid, VK_UUID_SIZE);
    memcpy(p->driverUUID, pdev->driver_uuid, VK_UUID_SIZE);
-   memset(p->deviceLUID, 0, VK_LUID_SIZE);
+   memcpy(p->deviceLUID, pdev->info.luid, VK_LUID_SIZE);
 
    snprintf(p->driverName, VK_MAX_DRIVER_NAME_SIZE, "radv");
    snprintf(p->driverInfo, VK_MAX_DRIVER_INFO_SIZE, "Mesa " PACKAGE_VERSION MESA_GIT_SHA1 "%s",

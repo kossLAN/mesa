@@ -367,6 +367,7 @@ MESAPROC struct util_sync_provider *ac_drm_device_get_sync_provider(ac_drm_devic
 MESAPROC uintptr_t ac_drm_device_get_cookie(ac_drm_device *dev) TAIL;
 MESAPROC void ac_drm_device_deinitialize(ac_drm_device *dev) TAILV;
 MESAPROC int ac_drm_device_get_fd(ac_drm_device *dev) TAIL;
+MESAPROC bool ac_drm_device_get_luid(ac_drm_device *dev, uint8_t luid[8]) TAILB;
 MESAPROC int ac_drm_bo_set_metadata(ac_drm_device *dev, uint32_t bo_handle,
                                 struct amdgpu_bo_metadata *info) TAIL;
 MESAPROC int ac_drm_bo_query_info(ac_drm_device *dev, uint32_t bo_handle, struct amdgpu_bo_info *info) TAIL;

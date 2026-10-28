@@ -92,6 +92,7 @@ struct wddm_device {
    struct wddm_kmt kmt;
 
    D3DKMT_HANDLE adapter;
+   LUID luid;
    D3DKMT_HANDLE device;
    D3DKMT_HANDLE context;
 
@@ -193,6 +194,7 @@ open_adapter(struct wddm_device *wd)
                   (vi.SupportedCapsetIDs & (1ull << WDDM_CAPSET_DRM));
       if (ours) {
          wd->adapter = infos[i].hAdapter;
+         wd->luid = infos[i].AdapterLuid;
       } else {
          D3DKMT_CLOSEADAPTER c = {.hAdapter = infos[i].hAdapter};
          (void)wd->kmt.closeAdapter(&c);
@@ -1239,6 +1241,14 @@ wddm_bo_close(struct vdrm_device *vdev, uint32_t handle)
    simple_mtx_unlock(&wd->bo_lock);
 }
 
+static bool
+wddm_get_luid(struct vdrm_device *vdev, uint8_t luid[8])
+{
+   struct wddm_device *wd = to_wddm_device(vdev);
+   memcpy(luid, &wd->luid, sizeof(wd->luid));
+   return true;
+}
+
 static void
 wddm_close(struct vdrm_device *vdev)
 {
@@ -1290,6 +1300,7 @@ static const struct vdrm_device_funcs funcs = {
    .bo_scanout = wddm_bo_scanout,
    .bo_export_win32 = wddm_bo_export_win32,
    .win32_to_handle = wddm_win32_to_handle,
+   .get_luid = wddm_get_luid,
    .close = wddm_close,
 };
 
