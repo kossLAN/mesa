@@ -39,6 +39,7 @@
 
 #define WDDM_CAPSET_DRM 6
 #define WDDM_SHMEM_SIZE 0x4000
+#define WDDM_LOCAL_SEGMENT 1
 
 struct wddm_bo {
    D3DKMT_HANDLE alloc;
@@ -80,6 +81,10 @@ struct wddm_kmt {
    PFND3DKMT_RENDER render;
    PFND3DKMT_CREATEALLOCATION createAllocation;
    PFND3DKMT_DESTROYALLOCATION destroyAllocation;
+   PFND3DKMT_CREATEPAGINGQUEUE createPagingQueue;
+   PFND3DKMT_DESTROYPAGINGQUEUE destroyPagingQueue;
+   PFND3DKMT_MAKERESIDENT makeResident;
+   PFND3DKMT_QUERYSTATISTICS queryStatistics;
    PFND3DKMT_SHAREOBJECTS shareObjects;
    PFND3DKMT_QUERYRESOURCEINFO queryResourceInfo;
    PFND3DKMT_OPENRESOURCE2 openResource2;
@@ -94,6 +99,7 @@ struct wddm_device {
    D3DKMT_HANDLE adapter;
    LUID luid;
    D3DKMT_HANDLE device;
+   D3DKMT_HANDLE paging_queue;
    D3DKMT_HANDLE context;
 
    simple_mtx_t submit_lock;
@@ -145,7 +151,11 @@ load_kmt(struct wddm_kmt *k)
    LOAD(render, "D3DKMTRender");
    LOAD(createAllocation, "D3DKMTCreateAllocation");
    LOAD(destroyAllocation, "D3DKMTDestroyAllocation");
+   LOAD(createPagingQueue, "D3DKMTCreatePagingQueue");
+   LOAD(destroyPagingQueue, "D3DKMTDestroyPagingQueue");
+   LOAD(makeResident, "D3DKMTMakeResident");
 #undef LOAD
+   k->queryStatistics = (void *)GetProcAddress(gdi, "D3DKMTQueryStatistics");
    k->shareObjects = (void *)GetProcAddress(gdi, "D3DKMTShareObjects");
    k->queryResourceInfo = (void *)GetProcAddress(gdi, "D3DKMTQueryResourceInfo");
    k->openResource2 = (void *)GetProcAddress(gdi, "D3DKMTOpenResource2");
@@ -954,6 +964,36 @@ insert_bo(struct wddm_device *wd, const struct wddm_bo *bo)
    return idx + 1;
 }
 
+static bool
+local_segment_fits(struct wddm_device *wd, uint64_t size)
+{
+   if (!wd->kmt.queryStatistics)
+      return false;
+   D3DKMT_QUERYSTATISTICS q = {
+      .Type = D3DKMT_QUERYSTATISTICS_SEGMENT,
+      .AdapterLuid = wd->luid,
+      .QuerySegment = {.SegmentId = WDDM_LOCAL_SEGMENT},
+   };
+   if (!NT_SUCCESS(wd->kmt.queryStatistics(&q)))
+      return false;
+   const D3DKMT_QUERYSTATISTICS_SEGMENT_INFORMATION *seg = &q.QueryResult.SegmentInformation;
+   return seg->BytesResident + size <= seg->CommitLimit;
+}
+
+static void
+make_resident(struct wddm_device *wd, D3DKMT_HANDLE alloc, uint64_t size)
+{
+   D3DDDI_MAKERESIDENT mr = {
+      .hPagingQueue = wd->paging_queue,
+      .NumAllocations = 1,
+      .AllocationList = &alloc,
+   };
+   if (NT_SUCCESS(wd->kmt.makeResident(&mr)) || !local_segment_fits(wd, size))
+      return;
+   mr.Flags.CantTrimFurther = 1;
+   (void)wd->kmt.makeResident(&mr);
+}
+
 static uint32_t
 wddm_bo_create(struct vdrm_device *vdev, size_t size, uint32_t blob_flags, uint64_t blob_id,
                uint32_t blob_hints, struct vdrm_ccmd_req *req)
@@ -975,6 +1015,7 @@ wddm_bo_create(struct vdrm_device *vdev, size_t size, uint32_t blob_flags, uint6
    struct wddm_bo bo;
    if (!create_blob(wd, size, blob_flags, blob_id, &bo))
       return 0;
+   make_resident(wd, bo.alloc, bo.size);
 
    simple_mtx_lock(&wd->bo_lock);
    uint32_t handle = insert_bo(wd, &bo);
@@ -1271,6 +1312,10 @@ wddm_close(struct vdrm_device *vdev)
       D3DKMT_DESTROYCONTEXT d = {.hContext = wd->context};
       (void)wd->kmt.destroyContext(&d);
    }
+   if (wd->paging_queue) {
+      D3DDDI_DESTROYPAGINGQUEUE d = {.hPagingQueue = wd->paging_queue};
+      (void)wd->kmt.destroyPagingQueue(&d);
+   }
    if (wd->device) {
       D3DKMT_DESTROYDEVICE d = {.hDevice = wd->device};
       (void)wd->kmt.destroyDevice(&d);
@@ -1340,6 +1385,11 @@ vdrm_wddm_connect(uint32_t context_type)
    if (!NT_SUCCESS(wd->kmt.createDevice(&cd)))
       goto fail;
    wd->device = cd.hDevice;
+
+   D3DKMT_CREATEPAGINGQUEUE pq = {.hDevice = wd->device};
+   if (!NT_SUCCESS(wd->kmt.createPagingQueue(&pq)))
+      goto fail;
+   wd->paging_queue = pq.hPagingQueue;
 
    VIOGPU_ESCAPE init = {
       .Type = VIOGPU_CTX_INIT,
